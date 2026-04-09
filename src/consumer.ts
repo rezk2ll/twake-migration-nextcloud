@@ -5,12 +5,7 @@ import { runMigration } from './migration.js'
 import { setFailed } from './tracking.js'
 import type { MigrationCommand } from './types.js'
 
-/**
- * Estimate source size from root listing. This is a shallow estimate (files in
- * the root directory only). The ADR specifies using Nextcloud's quota-used-bytes
- * from PROPFIND, but the exact mechanism depends on what the Stack returns.
- * This is a conservative pre-flight check; the real totals are discovered lazily.
- */
+/** Shallow estimate from root listing — conservative pre-flight check only. */
 async function estimateSourceSize(
   stackClient: StackClient,
   accountId: string,
