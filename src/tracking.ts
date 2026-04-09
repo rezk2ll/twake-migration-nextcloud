@@ -3,7 +3,7 @@ import type { TrackingDoc } from './types.js'
 
 const MAX_CONFLICT_RETRIES = 5
 
-function isConflictError(error: unknown): boolean {
+export function isConflictError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('(409)')
 }
 

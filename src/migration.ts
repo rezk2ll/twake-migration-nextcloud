@@ -1,12 +1,13 @@
 import type { Logger } from 'pino'
 import type { StackClient } from './stack-client.js'
-import type { MigrationCommand, NextcloudEntry, TrackingDoc } from './types.js'
+import type { MigrationCommand, NextcloudEntry } from './types.js'
 import {
   setRunning,
   setCompleted,
   setFailed,
   incrementProgress,
   addError,
+  isConflictError,
 } from './tracking.js'
 
 const COZY_ROOT_DIR_ID = 'io.cozy.files.root-dir'
@@ -15,15 +16,9 @@ const TARGET_DIR_NAME = 'Nextcloud'
 interface MigrationContext {
   command: MigrationCommand
   stackClient: StackClient
-  migrationId: string
   logger: Logger
 }
 
-function isConflictError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('(409)')
-}
-
-/** Calculate total bytes by recursively listing all files. */
 async function calculateTotalBytes(
   stackClient: StackClient,
   accountId: string,
@@ -45,21 +40,21 @@ async function calculateTotalBytes(
 }
 
 async function traverseDir(
-  accountId: string,
-  ncPath: string,
   cozyDirId: string,
   entries: NextcloudEntry[],
   ctx: MigrationContext
 ): Promise<void> {
+  const { accountId, migrationId } = ctx.command
+
   for (const entry of entries) {
     if (entry.type === 'directory') {
       const subDirId = await ctx.stackClient.createDir(cozyDirId, entry.name)
       const subEntries = await ctx.stackClient.listNextcloudDir(accountId, entry.path)
-      await traverseDir(accountId, entry.path, subDirId, subEntries, ctx)
+      await traverseDir(subDirId, subEntries, ctx)
     } else {
       try {
         const file = await ctx.stackClient.transferFile(accountId, entry.path, cozyDirId)
-        await incrementProgress(ctx.stackClient, ctx.migrationId, file.size)
+        await incrementProgress(ctx.stackClient, migrationId, file.size)
       } catch (error) {
         if (isConflictError(error)) {
           ctx.logger.info({ path: entry.path }, 'File already exists, skipping')
@@ -67,7 +62,7 @@ async function traverseDir(
         }
         const message = error instanceof Error ? error.message : String(error)
         ctx.logger.error({ path: entry.path, error: message }, 'File transfer failed')
-        await addError(ctx.stackClient, ctx.migrationId, entry.path, message)
+        await addError(ctx.stackClient, migrationId, entry.path, message)
       }
     }
   }
@@ -82,17 +77,11 @@ export async function runMigration(
     migration_id: command.migrationId,
     instance: command.workplaceFqdn,
   })
-  const ctx: MigrationContext = {
-    command,
-    stackClient,
-    migrationId: command.migrationId,
-    logger: migrationLogger,
-  }
+  const ctx: MigrationContext = { command, stackClient, logger: migrationLogger }
 
   try {
     migrationLogger.info('Starting migration')
 
-    // Calculate total size from source listing
     const sourcePath = command.sourcePath || '/'
     const { totalBytes, entries } = await calculateTotalBytes(
       stackClient,
@@ -100,16 +89,12 @@ export async function runMigration(
       sourcePath
     )
 
-    // Set running status with total bytes
     await setRunning(stackClient, command.migrationId, totalBytes)
 
-    // Create target directory in Cozy
     const targetDirId = await stackClient.createDir(COZY_ROOT_DIR_ID, TARGET_DIR_NAME)
 
-    // Traverse and transfer
-    await traverseDir(command.accountId, sourcePath, targetDirId, entries, ctx)
+    await traverseDir(targetDirId, entries, ctx)
 
-    // Mark completed
     await setCompleted(stackClient, command.migrationId)
     migrationLogger.info('Migration completed')
   } catch (error) {
