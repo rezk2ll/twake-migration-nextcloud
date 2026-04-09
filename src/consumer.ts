@@ -28,18 +28,15 @@ export async function handleMigrationMessage(
     instance: command.workplaceFqdn,
   })
 
-  // Phase 1: token acquisition (throws on failure → retry/DLQ)
   const token = await clouderyClient.getToken(command.workplaceFqdn)
   const stackClient = createStackClient(command.workplaceFqdn, token, clouderyClient)
 
-  // Phase 2: idempotency check
   const trackingDoc = await stackClient.getTrackingDoc(command.migrationId)
   if (trackingDoc.status === 'completed' || trackingDoc.status === 'running') {
     migrationLogger.info({ status: trackingDoc.status }, 'Migration already processed, skipping')
     return
   }
 
-  // Phase 3: quota validation
   const [diskUsage, sourceSize] = await Promise.all([
     stackClient.getDiskUsage(),
     estimateSourceSize(stackClient, command.accountId, command.sourcePath || '/'),
@@ -58,7 +55,6 @@ export async function handleMigrationMessage(
     return
   }
 
-  // Phase 4: fire and forget (handler returns = ACK)
   migrationLogger.info('Validation passed, starting migration')
   runMigration(command, stackClient, logger).catch((error) => {
     migrationLogger.error({ error }, 'Migration failed after ACK')
