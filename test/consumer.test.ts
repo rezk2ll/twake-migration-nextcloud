@@ -78,7 +78,7 @@ describe('handleMigrationMessage', () => {
     await handleMigrationMessage(command, mockCloudery, logger)
 
     expect(mockCloudery.getToken).toHaveBeenCalledWith('alice.cozy.example')
-    expect(createStackClient).toHaveBeenCalledWith('alice.cozy.example', 'jwt-token', mockCloudery)
+    expect(createStackClient).toHaveBeenCalledWith('alice.cozy.example', 'jwt-token', mockCloudery, expect.anything())
     expect(mockStack.getTrackingDoc).toHaveBeenCalledWith('mig-1')
     expect(runMigration).toHaveBeenCalledWith(command, mockStack, logger)
   })

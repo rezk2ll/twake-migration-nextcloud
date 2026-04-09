@@ -2,12 +2,17 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { createStackClient } from '../src/stack-client.js'
 import type { ClouderyClient } from '../src/cloudery-client.js'
 import type { TrackingDoc } from '../src/types.js'
+import type { Logger } from 'pino'
 
 describe('StackClient', () => {
   const FQDN = 'alice.cozy.example'
   const TOKEN = 'initial-token'
   let mockCloudery: ClouderyClient
   let mockFetch: ReturnType<typeof vi.fn>
+  const logger = {
+    info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  } as unknown as Logger
 
   beforeEach(() => {
     mockFetch = vi.fn()
@@ -29,7 +34,7 @@ describe('StackClient', () => {
         new Response(JSON.stringify(entries), { status: 200 })
       )
 
-      const client = createStackClient(FQDN, TOKEN, mockCloudery)
+      const client = createStackClient(FQDN, TOKEN, mockCloudery, logger)
       const result = await client.listNextcloudDir('acc-123', '/')
 
       expect(mockFetch).toHaveBeenCalledWith(
@@ -57,7 +62,7 @@ describe('StackClient', () => {
         new Response(JSON.stringify(jsonApiResponse), { status: 201 })
       )
 
-      const client = createStackClient(FQDN, TOKEN, mockCloudery)
+      const client = createStackClient(FQDN, TOKEN, mockCloudery, logger)
       const result = await client.transferFile('acc-123', '/doc.pdf', 'dir-1')
 
       expect(mockFetch).toHaveBeenCalledWith(
@@ -77,7 +82,7 @@ describe('StackClient', () => {
         new Response(JSON.stringify({ data: { id: 'new-dir-id' } }), { status: 201 })
       )
 
-      const client = createStackClient(FQDN, TOKEN, mockCloudery)
+      const client = createStackClient(FQDN, TOKEN, mockCloudery, logger)
       const dirId = await client.createDir('parent-id', 'Photos')
 
       expect(mockFetch).toHaveBeenCalledWith(
@@ -92,7 +97,7 @@ describe('StackClient', () => {
         new Response(JSON.stringify({ errors: [{ detail: 'conflict', source: { id: 'existing-dir-id' } }] }), { status: 409 })
       )
 
-      const client = createStackClient(FQDN, TOKEN, mockCloudery)
+      const client = createStackClient(FQDN, TOKEN, mockCloudery, logger)
       const dirId = await client.createDir('parent-id', 'Photos')
 
       expect(dirId).toBe('existing-dir-id')
@@ -105,7 +110,7 @@ describe('StackClient', () => {
         new Response(JSON.stringify({ data: { attributes: { used: '5000', quota: '10000' } } }), { status: 200 })
       )
 
-      const client = createStackClient(FQDN, TOKEN, mockCloudery)
+      const client = createStackClient(FQDN, TOKEN, mockCloudery, logger)
       const usage = await client.getDiskUsage()
 
       expect(usage).toEqual({ used: 5000, quota: 10000 })
@@ -129,7 +134,7 @@ describe('StackClient', () => {
         new Response(JSON.stringify(doc), { status: 200 })
       )
 
-      const client = createStackClient(FQDN, TOKEN, mockCloudery)
+      const client = createStackClient(FQDN, TOKEN, mockCloudery, logger)
       const result = await client.getTrackingDoc('mig-1')
 
       expect(mockFetch).toHaveBeenCalledWith(
@@ -161,7 +166,7 @@ describe('StackClient', () => {
         new Response(JSON.stringify({ ok: true, id: 'mig-1', rev: '2-def' }), { status: 200 })
       )
 
-      const client = createStackClient(FQDN, TOKEN, mockCloudery)
+      const client = createStackClient(FQDN, TOKEN, mockCloudery, logger)
       const result = await client.updateTrackingDoc(doc)
 
       expect(mockFetch).toHaveBeenCalledWith(
@@ -182,7 +187,7 @@ describe('StackClient', () => {
         .mockResolvedValueOnce(new Response('unauthorized', { status: 401 }))
         .mockResolvedValueOnce(new Response(JSON.stringify(entries), { status: 200 }))
 
-      const client = createStackClient(FQDN, TOKEN, mockCloudery)
+      const client = createStackClient(FQDN, TOKEN, mockCloudery, logger)
       const result = await client.listNextcloudDir('acc-123', '/')
 
       expect(mockCloudery.getToken).toHaveBeenCalledWith(FQDN)
@@ -197,7 +202,7 @@ describe('StackClient', () => {
         .mockResolvedValueOnce(new Response('unauthorized', { status: 401 }))
         .mockResolvedValueOnce(new Response('still unauthorized', { status: 401 }))
 
-      const client = createStackClient(FQDN, TOKEN, mockCloudery)
+      const client = createStackClient(FQDN, TOKEN, mockCloudery, logger)
 
       await expect(client.listNextcloudDir('acc-123', '/')).rejects.toThrow('401')
     })

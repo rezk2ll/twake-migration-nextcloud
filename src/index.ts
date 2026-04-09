@@ -13,9 +13,9 @@ async function main(): Promise<void> {
   const config = loadConfig()
   const logger = pino({ level: config.logLevel })
 
-  logger.info('Starting Nextcloud migration service')
+  logger.info({ event: 'service.starting' }, 'Starting Nextcloud migration service')
 
-  const clouderyClient = createClouderyClient(config.clouderyUrl, config.clouderyToken)
+  const clouderyClient = createClouderyClient(config.clouderyUrl, config.clouderyToken, logger)
 
   const rabbitClient = new RabbitMQClient({
     url: config.rabbitmqUrl,
@@ -26,7 +26,7 @@ async function main(): Promise<void> {
   })
 
   await rabbitClient.init()
-  logger.info('Connected to RabbitMQ')
+  logger.info({ event: 'rabbitmq.connected' }, 'Connected to RabbitMQ')
 
   await rabbitClient.subscribe(
     EXCHANGE,
@@ -37,15 +37,20 @@ async function main(): Promise<void> {
       await handleMigrationMessage(command, clouderyClient, logger)
     }
   )
-  logger.info({ exchange: EXCHANGE, queue: QUEUE, routingKey: ROUTING_KEY }, 'Subscribed to migration queue')
+  logger.info({
+    event: 'rabbitmq.subscribed',
+    exchange: EXCHANGE,
+    queue: QUEUE,
+    routing_key: ROUTING_KEY,
+  }, 'Subscribed to migration queue')
 
   let shuttingDown = false
   const shutdown = async (signal: string) => {
     if (shuttingDown) return
     shuttingDown = true
-    logger.info({ signal }, 'Shutting down')
+    logger.info({ event: 'service.shutting_down', signal }, 'Shutting down')
     await rabbitClient.close()
-    logger.info('RabbitMQ connection closed')
+    logger.info({ event: 'service.stopped' }, 'RabbitMQ connection closed')
     process.exit(0)
   }
 

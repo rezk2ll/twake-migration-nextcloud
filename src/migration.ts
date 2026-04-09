@@ -42,7 +42,11 @@ async function traverseDir(
         await traverseDir(accountId, entry.path, subDirId, ctx)
       } catch (error) {
         const message = getErrorMessage(error)
-        ctx.logger.error({ path: entry.path, error: message }, 'Directory traversal failed')
+        ctx.logger.error({
+          event: 'migration.dir_failed',
+          nc_path: entry.path,
+          error: message,
+        }, 'Directory traversal failed')
         await addError(ctx.stackClient, migrationId, entry.path, message)
       }
     } else {
@@ -50,16 +54,35 @@ async function traverseDir(
       ctx.discovered.filesTotal += 1
 
       try {
+        const start = Date.now()
         const file = await ctx.stackClient.transferFile(accountId, entry.path, cozyDirId)
         await incrementProgress(ctx.stackClient, migrationId, file.size)
+        ctx.logger.info({
+          event: 'migration.file_transferred',
+          nc_path: entry.path,
+          size: file.size,
+          duration_ms: Date.now() - start,
+          progress_bytes: ctx.discovered.bytesTotal,
+          progress_files: ctx.discovered.filesTotal,
+        }, 'File transferred')
       } catch (error) {
         if (isConflictError(error)) {
-          ctx.logger.info({ path: entry.path }, 'File already exists, skipping')
+          ctx.logger.info({
+            event: 'migration.file_skipped',
+            nc_path: entry.path,
+            size: entry.size,
+            reason: 'already exists',
+          }, 'File already exists, skipping')
           await addSkipped(ctx.stackClient, migrationId, entry.path, 'already exists', entry.size)
           continue
         }
         const message = getErrorMessage(error)
-        ctx.logger.error({ path: entry.path, error: message }, 'File transfer failed')
+        ctx.logger.error({
+          event: 'migration.file_failed',
+          nc_path: entry.path,
+          size: entry.size,
+          error: message,
+        }, 'File transfer failed')
         await addError(ctx.stackClient, migrationId, entry.path, message)
       }
     }
@@ -82,12 +105,15 @@ export async function runMigration(
   const migrationLogger = logger.child({
     migration_id: command.migrationId,
     instance: command.workplaceFqdn,
+    account_id: command.accountId,
+    source_path: command.sourcePath,
   })
   const discovered = { bytesTotal: 0, filesTotal: 0 }
   const ctx: MigrationContext = { command, stackClient, logger: migrationLogger, discovered }
 
+  const start = Date.now()
   try {
-    migrationLogger.info('Starting migration')
+    migrationLogger.info({ event: 'migration.started' }, 'Migration started')
 
     await setRunning(stackClient, command.migrationId, 0)
     const targetDirId = await stackClient.createDir(COZY_ROOT_DIR_ID, TARGET_DIR_NAME)
@@ -95,14 +121,28 @@ export async function runMigration(
     await updateBytesTotal(stackClient, command.migrationId, discovered.bytesTotal, discovered.filesTotal)
     await setCompleted(stackClient, command.migrationId)
 
-    migrationLogger.info('Migration completed')
+    migrationLogger.info({
+      event: 'migration.completed',
+      duration_ms: Date.now() - start,
+      bytes_total: discovered.bytesTotal,
+      files_total: discovered.filesTotal,
+    }, 'Migration completed')
   } catch (error) {
     const message = getErrorMessage(error)
-    migrationLogger.error({ error: message }, 'Migration failed')
+    migrationLogger.error({
+      event: 'migration.failed',
+      duration_ms: Date.now() - start,
+      bytes_total: discovered.bytesTotal,
+      files_total: discovered.filesTotal,
+      error: message,
+    }, 'Migration failed')
     try {
       await setFailed(stackClient, command.migrationId, message)
     } catch (trackingError) {
-      migrationLogger.error({ error: trackingError }, 'Failed to update tracking doc to failed status')
+      migrationLogger.error({
+        event: 'migration.tracking_update_failed',
+        error: getErrorMessage(trackingError),
+      }, 'Failed to update tracking doc to failed status')
     }
   }
 }

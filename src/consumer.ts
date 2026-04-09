@@ -37,14 +37,20 @@ export async function handleMigrationMessage(
   const migrationLogger = logger.child({
     migration_id: command.migrationId,
     instance: command.workplaceFqdn,
+    account_id: command.accountId,
   })
 
+  migrationLogger.info({ event: 'consumer.message_received' }, 'Migration message received')
+
   const token = await clouderyClient.getToken(command.workplaceFqdn)
-  const stackClient = createStackClient(command.workplaceFqdn, token, clouderyClient)
+  const stackClient = createStackClient(command.workplaceFqdn, token, clouderyClient, migrationLogger)
 
   const trackingDoc = await stackClient.getTrackingDoc(command.migrationId)
   if (trackingDoc.status === 'completed' || trackingDoc.status === 'running') {
-    migrationLogger.info({ status: trackingDoc.status }, 'Migration already processed, skipping')
+    migrationLogger.info({
+      event: 'consumer.skipped_idempotent',
+      status: trackingDoc.status,
+    }, 'Migration already processed, skipping')
     return
   }
 
@@ -57,10 +63,13 @@ export async function handleMigrationMessage(
   if (diskUsage.quota > 0) {
     const availableSpace = diskUsage.quota - diskUsage.used
     if (sourceEstimate > availableSpace) {
-      migrationLogger.warn(
-        { sourceEstimate, availableSpace },
-        'Insufficient quota for migration'
-      )
+      migrationLogger.warn({
+        event: 'consumer.quota_exceeded',
+        source_estimate: sourceEstimate,
+        available_space: availableSpace,
+        quota: diskUsage.quota,
+        used: diskUsage.used,
+      }, 'Insufficient quota for migration')
       await setFailed(
         stackClient,
         command.migrationId,
@@ -70,8 +79,17 @@ export async function handleMigrationMessage(
     }
   }
 
-  migrationLogger.info('Validation passed, starting migration')
+  migrationLogger.info({
+    event: 'consumer.validation_passed',
+    source_estimate: sourceEstimate,
+    quota: diskUsage.quota,
+    used: diskUsage.used,
+  }, 'Validation passed, firing migration')
+
   runMigration(command, stackClient, logger).catch((error) => {
-    migrationLogger.error({ error }, 'Migration failed after ACK')
+    migrationLogger.error({
+      event: 'consumer.migration_unhandled_error',
+      error,
+    }, 'Migration failed after ACK')
   })
 }
