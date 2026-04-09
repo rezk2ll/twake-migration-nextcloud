@@ -50,6 +50,13 @@ export function createStackClient(
   const settingsCollection = cozy.collection('io.cozy.settings')
   const fileCollection = cozy.collection('io.cozy.files')
 
+  /**
+   * Wraps a Stack operation with 401 token refresh. On 401, fetches a new
+   * token from the Cloudery, updates the CozyStackClient, and retries once.
+   * @param operation - Async function to execute and potentially retry
+   * @returns The result of the operation
+   * @throws The original error if status is not 401, or the retry error
+   */
   async function withTokenRefresh<T>(operation: () => Promise<T>): Promise<T> {
     try {
       return await operation()
@@ -66,6 +73,11 @@ export function createStackClient(
   }
 
   return {
+    /**
+     * @param accountId - Nextcloud account ID (io.cozy.accounts)
+     * @param path - Nextcloud directory path to list
+     * @returns Array of file and directory entries
+     */
     async listNextcloudDir(accountId: string, path: string): Promise<NextcloudEntry[]> {
       const { data } = await withTokenRefresh(() =>
         ncCollection.find({
@@ -83,6 +95,14 @@ export function createStackClient(
       }))
     },
 
+    /**
+     * Copies a file from Nextcloud into a Cozy directory via the Stack's
+     * downstream route. Fails with 409 if the file already exists.
+     * @param accountId - Nextcloud account ID (io.cozy.accounts)
+     * @param ncPath - Source file path on Nextcloud
+     * @param cozyDirId - Target Cozy directory ID
+     * @returns The created file's metadata
+     */
     async transferFile(accountId: string, ncPath: string, cozyDirId: string): Promise<CozyFile> {
       const resp = await withTokenRefresh(() =>
         ncCollection.moveToCozy(
@@ -102,6 +122,13 @@ export function createStackClient(
       }
     },
 
+    /**
+     * Creates a directory in Cozy VFS. If the directory already exists (409),
+     * extracts and returns the existing directory's ID.
+     * @param parentDirId - Parent directory ID in Cozy VFS
+     * @param name - Name of the directory to create
+     * @returns The created or existing directory's ID
+     */
     async createDir(parentDirId: string, name: string): Promise<string> {
       try {
         const { data } = await withTokenRefresh(() =>
@@ -111,7 +138,6 @@ export function createStackClient(
       } catch (error: unknown) {
         const status = (error as { status?: number }).status
         if (status === 409) {
-          // Directory already exists — extract ID from the conflict response
           const response = (error as { response?: Response }).response
           if (response) {
             const body = await response.json() as { errors?: Array<{ source?: { id?: string } }> }
@@ -124,6 +150,9 @@ export function createStackClient(
       }
     },
 
+    /**
+     * @returns Disk usage (used bytes) and quota for the instance. Quota 0 means unlimited.
+     */
     async getDiskUsage(): Promise<DiskUsage> {
       const { data } = await withTokenRefresh(() =>
         settingsCollection.get('io.cozy.settings.disk-usage')
@@ -135,6 +164,10 @@ export function createStackClient(
       }
     },
 
+    /**
+     * @param id - Tracking document ID (io.cozy.nextcloud.migrations)
+     * @returns The full tracking document from CouchDB
+     */
     async getTrackingDoc(id: string): Promise<TrackingDoc> {
       const { data } = await withTokenRefresh(() =>
         docCollection.get(id)
@@ -142,6 +175,10 @@ export function createStackClient(
       return data as unknown as TrackingDoc
     },
 
+    /**
+     * @param doc - Tracking document with _id and _rev
+     * @returns The document with updated _rev from CouchDB
+     */
     async updateTrackingDoc(doc: TrackingDoc): Promise<TrackingDoc> {
       const { data } = await withTokenRefresh(() =>
         docCollection.update(doc as unknown as Record<string, unknown>)
