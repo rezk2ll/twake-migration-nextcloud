@@ -12,18 +12,25 @@ export interface TrackingDoc {
   _id: string
   _rev?: string
   status: 'pending' | 'running' | 'completed' | 'failed'
-  started_at?: string
-  finished_at?: string
-  bytes_total: number
-  bytes_imported: number
-  files_imported: number
+  target_dir: string
+  progress: TrackingProgress
   errors: TrackingError[]
   skipped: TrackingSkipped[]
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface TrackingProgress {
+  files_imported: number
+  files_total: number
+  bytes_imported: number
+  bytes_total: number
 }
 
 export interface TrackingError {
   path: string
   message: string
+  at: string
 }
 
 export interface TrackingSkipped {
@@ -41,11 +48,9 @@ export interface NextcloudEntry {
   mime: string
 }
 
-/** File document returned by the Stack after a transfer or dir creation. */
+/** File attributes from Stack JSON-API response (size is string in the API). */
 export interface CozyFile {
-  _id: string
-  _rev: string
-  type: string
+  id: string
   name: string
   dir_id: string
   size: number

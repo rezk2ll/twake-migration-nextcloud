@@ -72,7 +72,14 @@ export function createStackClient(
       )
       const body = await response.text()
       assertOk(response, body)
-      return JSON.parse(body) as CozyFile
+      const parsed = JSON.parse(body) as { data: { id: string; attributes: Record<string, unknown> } }
+      const attrs = parsed.data.attributes
+      return {
+        id: parsed.data.id,
+        name: attrs.name as string,
+        dir_id: attrs.dir_id as string,
+        size: typeof attrs.size === 'string' ? parseInt(attrs.size, 10) : (attrs.size as number),
+      }
     },
 
     async createDir(parentDirId: string, name: string): Promise<string> {
@@ -123,7 +130,8 @@ export function createStackClient(
       )
       const body = await response.text()
       assertOk(response, body)
-      return JSON.parse(body) as TrackingDoc
+      const result = JSON.parse(body) as { ok: boolean; id: string; rev: string }
+      return { ...doc, _rev: result.rev }
     },
   }
 }

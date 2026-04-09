@@ -1,9 +1,30 @@
 import type { Logger } from 'pino'
 import type { ClouderyClient } from './cloudery-client.js'
-import { createStackClient } from './stack-client.js'
-import { calculateTotalBytes, runMigration } from './migration.js'
+import { createStackClient, type StackClient } from './stack-client.js'
+import { runMigration } from './migration.js'
 import { setFailed } from './tracking.js'
 import type { MigrationCommand } from './types.js'
+
+/**
+ * Estimate source size from root listing. This is a shallow estimate (files in
+ * the root directory only). The ADR specifies using Nextcloud's quota-used-bytes
+ * from PROPFIND, but the exact mechanism depends on what the Stack returns.
+ * This is a conservative pre-flight check; the real totals are discovered lazily.
+ */
+async function estimateSourceSize(
+  stackClient: StackClient,
+  accountId: string,
+  path: string
+): Promise<number> {
+  const entries = await stackClient.listNextcloudDir(accountId, path)
+  let total = 0
+  for (const entry of entries) {
+    if (entry.type === 'file') {
+      total += entry.size
+    }
+  }
+  return total
+}
 
 export async function handleMigrationMessage(
   command: MigrationCommand,
@@ -24,23 +45,23 @@ export async function handleMigrationMessage(
     return
   }
 
-  const [diskUsage, { totalBytes: sourceSize }] = await Promise.all([
+  const [diskUsage, sourceEstimate] = await Promise.all([
     stackClient.getDiskUsage(),
-    calculateTotalBytes(stackClient, command.accountId, command.sourcePath || '/'),
+    estimateSourceSize(stackClient, command.accountId, command.sourcePath || '/'),
   ])
 
   // quota === 0 means unlimited in Cozy Stack
   if (diskUsage.quota > 0) {
     const availableSpace = diskUsage.quota - diskUsage.used
-    if (sourceSize > availableSpace) {
+    if (sourceEstimate > availableSpace) {
       migrationLogger.warn(
-        { sourceSize, availableSpace },
+        { sourceEstimate, availableSpace },
         'Insufficient quota for migration'
       )
       await setFailed(
         stackClient,
         command.migrationId,
-        `Insufficient quota: need ${sourceSize} bytes, only ${availableSpace} available`
+        `Insufficient quota: need ${sourceEstimate} bytes, only ${availableSpace} available`
       )
       return
     }

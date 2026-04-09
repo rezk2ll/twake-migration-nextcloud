@@ -36,7 +36,10 @@ export async function setRunning(
     ...doc,
     status: 'running',
     started_at: startedAt,
-    bytes_total: bytesTotal,
+    progress: {
+      ...doc.progress,
+      bytes_total: bytesTotal,
+    },
   }))
 }
 
@@ -57,12 +60,12 @@ export async function setFailed(
   docId: string,
   errorMessage: string
 ): Promise<void> {
-  const finishedAt = new Date().toISOString()
+  const now = new Date().toISOString()
   await updateTracking(stackClient, docId, (doc) => ({
     ...doc,
     status: 'failed',
-    finished_at: finishedAt,
-    errors: [...doc.errors, { path: '', message: errorMessage }],
+    finished_at: now,
+    errors: [...doc.errors, { path: '', message: errorMessage, at: now }],
   }))
 }
 
@@ -73,8 +76,27 @@ export async function incrementProgress(
 ): Promise<void> {
   await updateTracking(stackClient, docId, (doc) => ({
     ...doc,
-    bytes_imported: doc.bytes_imported + fileSize,
-    files_imported: doc.files_imported + 1,
+    progress: {
+      ...doc.progress,
+      bytes_imported: doc.progress.bytes_imported + fileSize,
+      files_imported: doc.progress.files_imported + 1,
+    },
+  }))
+}
+
+export async function updateBytesTotal(
+  stackClient: StackClient,
+  docId: string,
+  bytesTotal: number,
+  filesTotal: number
+): Promise<void> {
+  await updateTracking(stackClient, docId, (doc) => ({
+    ...doc,
+    progress: {
+      ...doc.progress,
+      bytes_total: bytesTotal,
+      files_total: filesTotal,
+    },
   }))
 }
 
@@ -84,9 +106,10 @@ export async function addError(
   path: string,
   message: string
 ): Promise<void> {
+  const at = new Date().toISOString()
   await updateTracking(stackClient, docId, (doc) => ({
     ...doc,
-    errors: [...doc.errors, { path, message }],
+    errors: [...doc.errors, { path, message, at }],
   }))
 }
 

@@ -6,6 +6,7 @@ import {
   setCompleted,
   setFailed,
   incrementProgress,
+  updateBytesTotal,
   addError,
   addSkipped,
   isConflictError,
@@ -18,47 +19,38 @@ interface MigrationContext {
   command: MigrationCommand
   stackClient: StackClient
   logger: Logger
+  /** Running totals discovered during lazy traversal. */
+  discovered: { bytesTotal: number; filesTotal: number }
 }
 
-export async function calculateTotalBytes(
-  stackClient: StackClient,
-  accountId: string,
-  path: string
-): Promise<{ totalBytes: number; entries: NextcloudEntry[] }> {
-  const entries = await stackClient.listNextcloudDir(accountId, path)
-  let totalBytes = 0
-
-  for (const entry of entries) {
-    if (entry.type === 'file') {
-      totalBytes += entry.size
-    } else if (entry.type === 'directory') {
-      const sub = await calculateTotalBytes(stackClient, accountId, entry.path)
-      totalBytes += sub.totalBytes
-    }
-  }
-
-  return { totalBytes, entries }
-}
-
+/**
+ * Lazy recursive traversal: list one directory at a time, transfer its files,
+ * then recurse into subdirectories. Accumulates discovered totals as it goes.
+ */
 async function traverseDir(
+  accountId: string,
+  ncPath: string,
   cozyDirId: string,
-  entries: NextcloudEntry[],
   ctx: MigrationContext
 ): Promise<void> {
-  const { accountId, migrationId } = ctx.command
+  const { migrationId } = ctx.command
+
+  const entries = await ctx.stackClient.listNextcloudDir(accountId, ncPath)
 
   for (const entry of entries) {
     if (entry.type === 'directory') {
       try {
         const subDirId = await ctx.stackClient.createDir(cozyDirId, entry.name)
-        const subEntries = await ctx.stackClient.listNextcloudDir(accountId, entry.path)
-        await traverseDir(subDirId, subEntries, ctx)
+        await traverseDir(accountId, entry.path, subDirId, ctx)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         ctx.logger.error({ path: entry.path, error: message }, 'Directory traversal failed')
         await addError(ctx.stackClient, migrationId, entry.path, message)
       }
     } else {
+      ctx.discovered.bytesTotal += entry.size
+      ctx.discovered.filesTotal += 1
+
       try {
         const file = await ctx.stackClient.transferFile(accountId, entry.path, cozyDirId)
         await incrementProgress(ctx.stackClient, migrationId, file.size)
@@ -85,23 +77,30 @@ export async function runMigration(
     migration_id: command.migrationId,
     instance: command.workplaceFqdn,
   })
-  const ctx: MigrationContext = { command, stackClient, logger: migrationLogger }
+  const discovered = { bytesTotal: 0, filesTotal: 0 }
+  const ctx: MigrationContext = { command, stackClient, logger: migrationLogger, discovered }
 
   try {
     migrationLogger.info('Starting migration')
 
     const sourcePath = command.sourcePath || '/'
-    const { totalBytes, entries } = await calculateTotalBytes(
-      stackClient,
-      command.accountId,
-      sourcePath
-    )
 
-    await setRunning(stackClient, command.migrationId, totalBytes)
+    // Initial bytes_total comes from Nextcloud quota (set by consumer before ACK).
+    // Set status to running — bytes_total is already an estimate from the consumer.
+    await setRunning(stackClient, command.migrationId, 0)
 
     const targetDirId = await stackClient.createDir(COZY_ROOT_DIR_ID, TARGET_DIR_NAME)
 
-    await traverseDir(targetDirId, entries, ctx)
+    // Lazy traversal: discover and transfer directory by directory
+    await traverseDir(command.accountId, sourcePath, targetDirId, ctx)
+
+    // Refine bytes_total and files_total to actual discovered values
+    await updateBytesTotal(
+      stackClient,
+      command.migrationId,
+      discovered.bytesTotal,
+      discovered.filesTotal
+    )
 
     await setCompleted(stackClient, command.migrationId)
     migrationLogger.info('Migration completed')
