@@ -97,36 +97,39 @@ export async function setFailed(
   }))
 }
 
-/** Local progress state accumulated between flushes. */
+/** Local progress deltas accumulated between flushes. */
 export interface LocalProgress {
   bytesImported: number
   filesImported: number
-  bytesTotal: number
-  filesTotal: number
   errors: TrackingError[]
   skipped: TrackingSkipped[]
 }
 
+export function emptyLocalProgress(): LocalProgress {
+  return { bytesImported: 0, filesImported: 0, errors: [], skipped: [] }
+}
+
 /**
  * Flushes locally accumulated progress to CouchDB in a single write.
- * Merges local deltas into the remote doc. On 409, re-reads _rev and
- * reapplies the patch (external conflict, not self-conflict).
+ * On 409, re-reads _rev and reapplies the patch.
  * @param stackClient - Stack API client
  * @param docId - Tracking document ID
- * @param local - Accumulated local progress to merge
+ * @param local - Accumulated deltas since last flush
+ * @param discovered - Latest discovered totals (bytes_total, files_total)
  */
 export async function flushProgress(
   stackClient: StackClient,
   docId: string,
-  local: LocalProgress
+  local: LocalProgress,
+  discovered: { bytesTotal: number; filesTotal: number }
 ): Promise<void> {
   await updateTracking(stackClient, docId, (doc) => ({
     ...doc,
     progress: {
       bytes_imported: doc.progress.bytes_imported + local.bytesImported,
       files_imported: doc.progress.files_imported + local.filesImported,
-      bytes_total: local.bytesTotal,
-      files_total: local.filesTotal,
+      bytes_total: discovered.bytesTotal,
+      files_total: discovered.filesTotal,
     },
     errors: [...doc.errors, ...local.errors],
     skipped: [...doc.skipped, ...local.skipped],

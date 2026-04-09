@@ -1,11 +1,12 @@
 import type { Logger } from 'pino'
 import type { StackClient } from './stack-client.js'
-import type { MigrationCommand, TrackingError, TrackingSkipped } from './types.js'
+import type { MigrationCommand } from './types.js'
 import {
   setRunning,
   setCompleted,
   setFailed,
   flushProgress,
+  emptyLocalProgress,
   isConflictError,
   type LocalProgress,
 } from './tracking.js'
@@ -43,15 +44,8 @@ async function flush(ctx: MigrationContext): Promise<void> {
   if (ctx.filesSinceFlush === 0 && ctx.pending.errors.length === 0 && ctx.pending.skipped.length === 0) {
     return
   }
-  await flushProgress(ctx.stackClient, ctx.command.migrationId, {
-    ...ctx.pending,
-    bytesTotal: ctx.discovered.bytesTotal,
-    filesTotal: ctx.discovered.filesTotal,
-  })
-  ctx.pending.bytesImported = 0
-  ctx.pending.filesImported = 0
-  ctx.pending.errors = []
-  ctx.pending.skipped = []
+  await flushProgress(ctx.stackClient, ctx.command.migrationId, ctx.pending, ctx.discovered)
+  ctx.pending = emptyLocalProgress()
   ctx.filesSinceFlush = 0
 }
 
@@ -167,7 +161,7 @@ export async function runMigration(
     logger: migrationLogger,
     discovered: { bytesTotal: 0, filesTotal: 0 },
     transferred: { bytes: 0, files: 0 },
-    pending: { bytesImported: 0, filesImported: 0, bytesTotal: 0, filesTotal: 0, errors: [], skipped: [] },
+    pending: emptyLocalProgress(),
     totalErrors: 0,
     totalSkipped: 0,
     filesSinceFlush: 0,

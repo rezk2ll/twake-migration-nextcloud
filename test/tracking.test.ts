@@ -132,11 +132,9 @@ describe('flushProgress', () => {
     await flushProgress(stack, 'mig-1', {
       bytesImported: 500,
       filesImported: 3,
-      bytesTotal: 9000,
-      filesTotal: 20,
       errors: [{ path: '/new.txt', message: 'new error', at: '2024-01-02T00:00:00Z' }],
       skipped: [{ path: '/dup.txt', reason: 'already exists', size: 42 }],
-    })
+    }, { bytesTotal: 9000, filesTotal: 20 })
 
     const calledDoc = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
     // Deltas are added to existing values
@@ -158,9 +156,8 @@ describe('flushProgress', () => {
 
     await flushProgress(stack, 'mig-1', {
       bytesImported: 100, filesImported: 1,
-      bytesTotal: 100, filesTotal: 1,
       errors: [], skipped: [],
-    })
+    }, { bytesTotal: 100, filesTotal: 1 })
 
     // Re-reads doc and reapplies patch
     expect(stack.getTrackingDoc).toHaveBeenCalledTimes(2)
