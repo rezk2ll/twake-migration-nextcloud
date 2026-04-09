@@ -44,7 +44,8 @@ export function createStackClient(
   async function request(
     method: string,
     path: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    allowedStatuses: number[] = []
   ): Promise<{ response: Response; body: string; duration_ms: number }> {
     const start = Date.now()
     const headers: Record<string, string> = {
@@ -69,7 +70,7 @@ export function createStackClient(
     const body = await response.text()
     const duration_ms = Date.now() - start
 
-    if (!response.ok) {
+    if (!response.ok && !allowedStatuses.includes(response.status)) {
       logger.error({
         event: 'stack.request_failed',
         method,
@@ -106,10 +107,7 @@ export function createStackClient(
 
     async createDir(parentDirId: string, name: string): Promise<string> {
       const reqPath = `/files/${parentDirId}?Name=${name}&Type=directory`
-      const start = Date.now()
-      const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
-      const response = await fetch(`${baseUrl}${reqPath}`, { method: 'POST', headers })
-      const body = await response.text()
+      const { response, body } = await request('POST', reqPath, {}, [409])
 
       if (response.status === 409) {
         const conflict = JSON.parse(body) as { errors?: Array<{ source?: { id?: string } }> }
@@ -118,18 +116,6 @@ export function createStackClient(
           throw new Error(`Stack 409 on createDir but no existing dir ID in response: ${body}`)
         }
         return existingId
-      }
-
-      if (!response.ok) {
-        logger.error({
-          event: 'stack.request_failed',
-          method: 'POST',
-          path: reqPath,
-          status: response.status,
-          duration_ms: Date.now() - start,
-          error: body,
-        }, 'Stack request failed')
-        throw new Error(`Stack request failed (${response.status}): ${body}`)
       }
 
       const created = JSON.parse(body) as { data: { id: string } }
