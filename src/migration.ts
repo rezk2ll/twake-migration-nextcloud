@@ -66,6 +66,14 @@ async function traverseDir(
   }
 }
 
+/**
+ * Runs the full migration: sets status to running, creates target directory,
+ * lazily traverses the Nextcloud tree transferring files, and updates the
+ * tracking document throughout. On failure, marks the migration as failed.
+ * @param command - Migration command from RabbitMQ
+ * @param stackClient - Authenticated Stack API client
+ * @param logger - Pino logger instance
+ */
 export async function runMigration(
   command: MigrationCommand,
   stackClient: StackClient,

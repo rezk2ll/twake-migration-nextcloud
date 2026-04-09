@@ -8,6 +8,11 @@ function requireEnv(name: string): string {
   return value
 }
 
+/**
+ * Loads and validates configuration from environment variables.
+ * @returns Parsed Config object
+ * @throws If any required env var is missing
+ */
 export function loadConfig(): Config {
   return {
     rabbitmqUrl: requireEnv('RABBITMQ_URL'),

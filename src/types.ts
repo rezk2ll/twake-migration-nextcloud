@@ -1,4 +1,3 @@
-/** Message published by the Stack when a user requests a migration. */
 export interface MigrationCommand {
   migrationId: string
   workplaceFqdn: string
@@ -7,7 +6,7 @@ export interface MigrationCommand {
   timestamp: number
 }
 
-/** Tracking document stored in CouchDB (io.cozy.nextcloud.migrations). */
+/** Doctype: io.cozy.nextcloud.migrations */
 export interface TrackingDoc {
   _id: string
   _rev?: string
@@ -39,7 +38,6 @@ export interface TrackingSkipped {
   size: number
 }
 
-/** Entry returned by the Stack's Nextcloud directory listing. */
 export interface NextcloudEntry {
   type: 'file' | 'directory'
   name: string
@@ -48,7 +46,7 @@ export interface NextcloudEntry {
   mime: string
 }
 
-/** File attributes from Stack JSON-API response (size is string in the API). */
+/** Unwrapped from the Stack's JSON-API response. Size is parsed from string. */
 export interface CozyFile {
   id: string
   name: string
@@ -56,12 +54,18 @@ export interface CozyFile {
   size: number
 }
 
-/** Disk usage from GET /settings/disk-usage. */
 export interface DiskUsage {
   used: number
+  /** 0 means unlimited in Cozy Stack. */
   quota: number
 }
 
+/**
+ * Validates and extracts a MigrationCommand from a raw RabbitMQ message.
+ * @param msg - Raw message payload from RabbitMQ
+ * @returns Validated MigrationCommand with defaults for optional fields
+ * @throws If migrationId, workplaceFqdn, or accountId are missing
+ */
 export function parseMigrationCommand(msg: Record<string, unknown>): MigrationCommand {
   const { migrationId, workplaceFqdn, accountId, sourcePath, timestamp } = msg
   if (typeof migrationId !== 'string' || !migrationId) {
@@ -82,7 +86,6 @@ export function parseMigrationCommand(msg: Record<string, unknown>): MigrationCo
   }
 }
 
-/** Parsed and validated environment config. */
 export interface Config {
   rabbitmqUrl: string
   clouderyUrl: string

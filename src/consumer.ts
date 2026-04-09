@@ -5,7 +5,6 @@ import { runMigration } from './migration.js'
 import { setFailed } from './tracking.js'
 import type { MigrationCommand } from './types.js'
 
-/** Shallow estimate from root listing — conservative pre-flight check only. */
 async function estimateSourceSize(
   stackClient: StackClient,
   accountId: string,
@@ -21,6 +20,15 @@ async function estimateSourceSize(
   return total
 }
 
+/**
+ * Handles a single migration message: acquires a token, validates idempotency
+ * and quota, then fires the migration without awaiting (early ACK pattern).
+ * Throws on pre-ACK failures (token acquisition, tracking doc fetch) so the
+ * RabbitMQ library can retry or dead-letter.
+ * @param command - Validated migration command
+ * @param clouderyClient - Client for obtaining Stack tokens
+ * @param logger - Pino logger instance
+ */
 export async function handleMigrationMessage(
   command: MigrationCommand,
   clouderyClient: ClouderyClient,
@@ -45,7 +53,7 @@ export async function handleMigrationMessage(
     estimateSourceSize(stackClient, command.accountId, command.sourcePath || '/'),
   ])
 
-  // quota === 0 means unlimited in Cozy Stack
+  // quota === 0 means unlimited
   if (diskUsage.quota > 0) {
     const availableSpace = diskUsage.quota - diskUsage.used
     if (sourceEstimate > availableSpace) {

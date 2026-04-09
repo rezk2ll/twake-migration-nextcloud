@@ -3,10 +3,21 @@ import type { TrackingDoc } from './types.js'
 
 const MAX_CONFLICT_RETRIES = 5
 
+/**
+ * @param error - Caught error value
+ * @returns true if the error is a CouchDB 409 conflict
+ */
 export function isConflictError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('(409)')
 }
 
+/**
+ * Read-modify-write with automatic retry on CouchDB 409 conflicts.
+ * @param stackClient - Stack API client
+ * @param docId - Tracking document ID
+ * @param updater - Pure function that produces the updated document
+ * @throws After {@link MAX_CONFLICT_RETRIES} consecutive 409s, or on any non-409 error
+ */
 export async function updateTracking(
   stackClient: StackClient,
   docId: string,
@@ -26,6 +37,12 @@ export async function updateTracking(
   }
 }
 
+/**
+ * Transitions the tracking document to "running".
+ * @param stackClient - Stack API client
+ * @param docId - Tracking document ID
+ * @param bytesTotal - Initial estimated total bytes (from Nextcloud quota)
+ */
 export async function setRunning(
   stackClient: StackClient,
   docId: string,
@@ -43,6 +60,11 @@ export async function setRunning(
   }))
 }
 
+/**
+ * Transitions the tracking document to "completed".
+ * @param stackClient - Stack API client
+ * @param docId - Tracking document ID
+ */
 export async function setCompleted(
   stackClient: StackClient,
   docId: string
@@ -55,6 +77,12 @@ export async function setCompleted(
   }))
 }
 
+/**
+ * Transitions the tracking document to "failed" and records the error.
+ * @param stackClient - Stack API client
+ * @param docId - Tracking document ID
+ * @param errorMessage - Human-readable failure reason
+ */
 export async function setFailed(
   stackClient: StackClient,
   docId: string,
@@ -69,6 +97,12 @@ export async function setFailed(
   }))
 }
 
+/**
+ * Increments progress counters after a successful file transfer.
+ * @param stackClient - Stack API client
+ * @param docId - Tracking document ID
+ * @param fileSize - Size in bytes of the transferred file
+ */
 export async function incrementProgress(
   stackClient: StackClient,
   docId: string,
@@ -84,6 +118,13 @@ export async function incrementProgress(
   }))
 }
 
+/**
+ * Refines the total counters to actual discovered values after traversal completes.
+ * @param stackClient - Stack API client
+ * @param docId - Tracking document ID
+ * @param bytesTotal - Actual total bytes discovered during traversal
+ * @param filesTotal - Actual total file count discovered during traversal
+ */
 export async function updateBytesTotal(
   stackClient: StackClient,
   docId: string,
@@ -100,6 +141,13 @@ export async function updateBytesTotal(
   }))
 }
 
+/**
+ * Records a per-file error in the tracking document.
+ * @param stackClient - Stack API client
+ * @param docId - Tracking document ID
+ * @param path - Nextcloud path of the file that failed
+ * @param message - Error description
+ */
 export async function addError(
   stackClient: StackClient,
   docId: string,
@@ -113,6 +161,14 @@ export async function addError(
   }))
 }
 
+/**
+ * Records a skipped file in the tracking document.
+ * @param stackClient - Stack API client
+ * @param docId - Tracking document ID
+ * @param path - Nextcloud path of the skipped file
+ * @param reason - Why the file was skipped
+ * @param size - Size in bytes of the skipped file
+ */
 export async function addSkipped(
   stackClient: StackClient,
   docId: string,

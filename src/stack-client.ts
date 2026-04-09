@@ -21,6 +21,13 @@ function stripLeadingSlash(path: string): string {
   return path.startsWith('/') ? path.slice(1) : path
 }
 
+/**
+ * Creates an HTTP client for the Cozy Stack API with automatic 401 token refresh.
+ * @param workplaceFqdn - FQDN of the target Cozy instance
+ * @param initialToken - JWT token obtained from the Cloudery
+ * @param clouderyClient - Used to refresh the token on 401
+ * @returns StackClient instance
+ */
 export function createStackClient(
   workplaceFqdn: string,
   initialToken: string,

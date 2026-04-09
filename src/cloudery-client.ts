@@ -2,6 +2,12 @@ export interface ClouderyClient {
   getToken(workplaceFqdn: string): Promise<string>
 }
 
+/**
+ * Creates a client for the Cloudery token endpoint.
+ * @param clouderyUrl - Base URL of the Cloudery (e.g. https://manager.cozycloud.cc)
+ * @param clouderyToken - API bearer token for authenticating with the Cloudery
+ * @returns ClouderyClient instance
+ */
 export function createClouderyClient(
   clouderyUrl: string,
   clouderyToken: string
