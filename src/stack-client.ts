@@ -39,10 +39,10 @@ export function createStackClient(
     token: new AppToken(initialToken),
   })
 
-  const ncCollection = cozy.collection(NC_FILES_DOCTYPE) as InstanceType<typeof import('cozy-stack-client').NextcloudFilesCollection>
+  const ncCollection = cozy.collection(NC_FILES_DOCTYPE)
   const docCollection = cozy.collection(MIGRATIONS_DOCTYPE)
-  const settingsCollection = cozy.collection('io.cozy.settings') as InstanceType<typeof import('cozy-stack-client').SettingsCollection>
-  const fileCollection = cozy.collection('io.cozy.files') as InstanceType<typeof import('cozy-stack-client').FileCollection>
+  const settingsCollection = cozy.collection('io.cozy.settings')
+  const fileCollection = cozy.collection('io.cozy.files')
 
   async function withTokenRefresh<T>(operation: () => Promise<T>): Promise<T> {
     try {
@@ -55,12 +55,6 @@ export function createStackClient(
         cozy.setToken(new AppToken(newToken))
         return await operation()
       }
-      const message = error instanceof Error ? error.message : String(error)
-      logger.error({
-        event: 'stack.request_failed',
-        status,
-        error: message,
-      }, 'Stack request failed')
       throw error
     }
   }
