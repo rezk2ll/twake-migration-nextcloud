@@ -1,5 +1,5 @@
 import type { StackClient } from './stack-client.js'
-import type { TrackingDoc } from './types.js'
+import type { TrackingDoc, TrackingError, TrackingSkipped } from './types.js'
 
 const MAX_CONFLICT_RETRIES = 5
 
@@ -97,87 +97,38 @@ export async function setFailed(
   }))
 }
 
-/**
- * Increments progress counters after a successful file transfer.
- * @param stackClient - Stack API client
- * @param docId - Tracking document ID
- * @param fileSize - Size in bytes of the transferred file
- */
-export async function incrementProgress(
-  stackClient: StackClient,
-  docId: string,
-  fileSize: number
-): Promise<void> {
-  await updateTracking(stackClient, docId, (doc) => ({
-    ...doc,
-    progress: {
-      ...doc.progress,
-      bytes_imported: doc.progress.bytes_imported + fileSize,
-      files_imported: doc.progress.files_imported + 1,
-    },
-  }))
-}
-
-/**
- * Refines the total counters to actual discovered values after traversal completes.
- * @param stackClient - Stack API client
- * @param docId - Tracking document ID
- * @param bytesTotal - Actual total bytes discovered during traversal
- * @param filesTotal - Actual total file count discovered during traversal
- */
-export async function updateBytesTotal(
-  stackClient: StackClient,
-  docId: string,
-  bytesTotal: number,
+/** Local progress state accumulated between flushes. */
+export interface LocalProgress {
+  bytesImported: number
+  filesImported: number
+  bytesTotal: number
   filesTotal: number
+  errors: TrackingError[]
+  skipped: TrackingSkipped[]
+}
+
+/**
+ * Flushes locally accumulated progress to CouchDB in a single write.
+ * Merges local deltas into the remote doc. On 409, re-reads _rev and
+ * reapplies the patch (external conflict, not self-conflict).
+ * @param stackClient - Stack API client
+ * @param docId - Tracking document ID
+ * @param local - Accumulated local progress to merge
+ */
+export async function flushProgress(
+  stackClient: StackClient,
+  docId: string,
+  local: LocalProgress
 ): Promise<void> {
   await updateTracking(stackClient, docId, (doc) => ({
     ...doc,
     progress: {
-      ...doc.progress,
-      bytes_total: bytesTotal,
-      files_total: filesTotal,
+      bytes_imported: doc.progress.bytes_imported + local.bytesImported,
+      files_imported: doc.progress.files_imported + local.filesImported,
+      bytes_total: local.bytesTotal,
+      files_total: local.filesTotal,
     },
-  }))
-}
-
-/**
- * Records a per-file error in the tracking document.
- * @param stackClient - Stack API client
- * @param docId - Tracking document ID
- * @param path - Nextcloud path of the file that failed
- * @param message - Error description
- */
-export async function addError(
-  stackClient: StackClient,
-  docId: string,
-  path: string,
-  message: string
-): Promise<void> {
-  const at = new Date().toISOString()
-  await updateTracking(stackClient, docId, (doc) => ({
-    ...doc,
-    errors: [...doc.errors, { path, message, at }],
-  }))
-}
-
-/**
- * Records a skipped file in the tracking document.
- * @param stackClient - Stack API client
- * @param docId - Tracking document ID
- * @param path - Nextcloud path of the skipped file
- * @param reason - Why the file was skipped
- * @param size - Size in bytes of the skipped file
- */
-export async function addSkipped(
-  stackClient: StackClient,
-  docId: string,
-  path: string,
-  reason: string,
-  size: number
-): Promise<void> {
-  await updateTracking(stackClient, docId, (doc) => ({
-    ...doc,
-    skipped: [...doc.skipped, { path, reason, size }],
+    errors: [...doc.errors, ...local.errors],
+    skipped: [...doc.skipped, ...local.skipped],
   }))
 }

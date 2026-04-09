@@ -1,19 +1,18 @@
 import type { Logger } from 'pino'
 import type { StackClient } from './stack-client.js'
-import type { MigrationCommand } from './types.js'
+import type { MigrationCommand, TrackingError, TrackingSkipped } from './types.js'
 import {
   setRunning,
   setCompleted,
   setFailed,
-  incrementProgress,
-  updateBytesTotal,
-  addError,
-  addSkipped,
+  flushProgress,
   isConflictError,
+  type LocalProgress,
 } from './tracking.js'
 
 const COZY_ROOT_DIR_ID = 'io.cozy.files.root-dir'
 const TARGET_DIR_NAME = 'Nextcloud'
+const FLUSH_EVERY_N_FILES = 50
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -23,11 +22,36 @@ interface MigrationContext {
   command: MigrationCommand
   stackClient: StackClient
   logger: Logger
+  /** Total discovered during traversal (cumulative, never reset). */
   discovered: { bytesTotal: number; filesTotal: number }
+  /** Total transferred (cumulative, never reset). Used for logging. */
   transferred: { bytes: number; files: number }
-  errors: number
-  skipped: number
+  /** Local deltas accumulated since last flush. Reset after each flush. */
+  pending: LocalProgress
+  /** Counters for logging. */
+  totalErrors: number
+  totalSkipped: number
+  filesSinceFlush: number
   startedAt: number
+}
+
+/**
+ * Flushes pending local progress to CouchDB and resets the pending accumulators.
+ */
+async function flush(ctx: MigrationContext): Promise<void> {
+  if (ctx.filesSinceFlush === 0 && ctx.pending.errors.length === 0 && ctx.pending.skipped.length === 0) {
+    return
+  }
+  await flushProgress(ctx.stackClient, ctx.command.migrationId, {
+    ...ctx.pending,
+    bytesTotal: ctx.discovered.bytesTotal,
+    filesTotal: ctx.discovered.filesTotal,
+  })
+  ctx.pending.bytesImported = 0
+  ctx.pending.filesImported = 0
+  ctx.pending.errors = []
+  ctx.pending.skipped = []
+  ctx.filesSinceFlush = 0
 }
 
 async function traverseDir(
@@ -36,7 +60,6 @@ async function traverseDir(
   cozyDirId: string,
   ctx: MigrationContext
 ): Promise<void> {
-  const { migrationId } = ctx.command
   const entries = await ctx.stackClient.listNextcloudDir(accountId, ncPath)
 
   for (const entry of entries) {
@@ -45,16 +68,16 @@ async function traverseDir(
         const subDirId = await ctx.stackClient.createDir(cozyDirId, entry.name)
         await traverseDir(accountId, entry.path, subDirId, ctx)
       } catch (error) {
-        ctx.errors += 1
+        ctx.totalErrors += 1
         const message = getErrorMessage(error)
         ctx.logger.error({
           event: 'migration.dir_failed',
           nc_path: entry.path,
           error: message,
-          total_errors: ctx.errors,
+          total_errors: ctx.totalErrors,
           elapsed_ms: Date.now() - ctx.startedAt,
         }, 'Directory traversal failed')
-        await addError(ctx.stackClient, migrationId, entry.path, message)
+        ctx.pending.errors.push({ path: entry.path, message, at: new Date().toISOString() })
       }
     } else {
       ctx.discovered.bytesTotal += entry.size
@@ -63,9 +86,11 @@ async function traverseDir(
       try {
         const fileStart = Date.now()
         const file = await ctx.stackClient.transferFile(accountId, entry.path, cozyDirId)
-        await incrementProgress(ctx.stackClient, migrationId, file.size)
         ctx.transferred.bytes += file.size
         ctx.transferred.files += 1
+        ctx.pending.bytesImported += file.size
+        ctx.pending.filesImported += 1
+        ctx.filesSinceFlush += 1
 
         ctx.logger.info({
           event: 'migration.file_transferred',
@@ -76,35 +101,39 @@ async function traverseDir(
           transferred_files: ctx.transferred.files,
           discovered_bytes: ctx.discovered.bytesTotal,
           discovered_files: ctx.discovered.filesTotal,
-          total_errors: ctx.errors,
-          total_skipped: ctx.skipped,
+          total_errors: ctx.totalErrors,
+          total_skipped: ctx.totalSkipped,
           elapsed_ms: Date.now() - ctx.startedAt,
         }, 'File transferred')
+
+        if (ctx.filesSinceFlush >= FLUSH_EVERY_N_FILES) {
+          await flush(ctx)
+        }
       } catch (error) {
         if (isConflictError(error)) {
-          ctx.skipped += 1
+          ctx.totalSkipped += 1
           ctx.logger.info({
             event: 'migration.file_skipped',
             nc_path: entry.path,
             size: entry.size,
             reason: 'already_exists',
-            total_skipped: ctx.skipped,
+            total_skipped: ctx.totalSkipped,
             elapsed_ms: Date.now() - ctx.startedAt,
           }, 'File already exists, skipping')
-          await addSkipped(ctx.stackClient, migrationId, entry.path, 'already exists', entry.size)
+          ctx.pending.skipped.push({ path: entry.path, reason: 'already exists', size: entry.size })
           continue
         }
-        ctx.errors += 1
+        ctx.totalErrors += 1
         const message = getErrorMessage(error)
         ctx.logger.error({
           event: 'migration.file_failed',
           nc_path: entry.path,
           size: entry.size,
           error: message,
-          total_errors: ctx.errors,
+          total_errors: ctx.totalErrors,
           elapsed_ms: Date.now() - ctx.startedAt,
         }, 'File transfer failed')
-        await addError(ctx.stackClient, migrationId, entry.path, message)
+        ctx.pending.errors.push({ path: entry.path, message, at: new Date().toISOString() })
       }
     }
   }
@@ -135,8 +164,10 @@ export async function runMigration(
     logger: migrationLogger,
     discovered: { bytesTotal: 0, filesTotal: 0 },
     transferred: { bytes: 0, files: 0 },
-    errors: 0,
-    skipped: 0,
+    pending: { bytesImported: 0, filesImported: 0, bytesTotal: 0, filesTotal: 0, errors: [], skipped: [] },
+    totalErrors: 0,
+    totalSkipped: 0,
+    filesSinceFlush: 0,
     startedAt: Date.now(),
   }
 
@@ -146,7 +177,7 @@ export async function runMigration(
     await setRunning(stackClient, command.migrationId, 0)
     const targetDirId = await stackClient.createDir(COZY_ROOT_DIR_ID, TARGET_DIR_NAME)
     await traverseDir(command.accountId, command.sourcePath || '/', targetDirId, ctx)
-    await updateBytesTotal(stackClient, command.migrationId, ctx.discovered.bytesTotal, ctx.discovered.filesTotal)
+    await flush(ctx)
     await setCompleted(stackClient, command.migrationId)
 
     migrationLogger.info({
@@ -156,8 +187,8 @@ export async function runMigration(
       discovered_files: ctx.discovered.filesTotal,
       transferred_bytes: ctx.transferred.bytes,
       transferred_files: ctx.transferred.files,
-      total_errors: ctx.errors,
-      total_skipped: ctx.skipped,
+      total_errors: ctx.totalErrors,
+      total_skipped: ctx.totalSkipped,
     }, 'Migration completed')
   } catch (error) {
     const message = getErrorMessage(error)
@@ -168,11 +199,12 @@ export async function runMigration(
       discovered_files: ctx.discovered.filesTotal,
       transferred_bytes: ctx.transferred.bytes,
       transferred_files: ctx.transferred.files,
-      total_errors: ctx.errors,
-      total_skipped: ctx.skipped,
+      total_errors: ctx.totalErrors,
+      total_skipped: ctx.totalSkipped,
       error: message,
     }, 'Migration failed')
     try {
+      await flush(ctx)
       await setFailed(stackClient, command.migrationId, message)
     } catch (trackingError) {
       migrationLogger.error({

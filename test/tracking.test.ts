@@ -4,10 +4,7 @@ import {
   setRunning,
   setCompleted,
   setFailed,
-  incrementProgress,
-  updateBytesTotal,
-  addError,
-  addSkipped,
+  flushProgress,
 } from '../src/tracking.js'
 import type { StackClient } from '../src/stack-client.js'
 import type { TrackingDoc } from '../src/types.js'
@@ -17,7 +14,7 @@ function makeDoc(overrides: Partial<TrackingDoc> = {}): TrackingDoc {
     _id: 'mig-1',
     _rev: '1-abc',
     status: 'pending',
-    target_dir: 'io.cozy.files.root-dir',
+    target_dir: '/Nextcloud',
     progress: {
       files_imported: 0,
       files_total: 0,
@@ -32,142 +29,141 @@ function makeDoc(overrides: Partial<TrackingDoc> = {}): TrackingDoc {
   }
 }
 
+function makeMockStack(doc?: TrackingDoc): StackClient {
+  return {
+    getTrackingDoc: vi.fn().mockResolvedValue(doc ?? makeDoc()),
+    updateTrackingDoc: vi.fn().mockImplementation(async (d: TrackingDoc) => d),
+    listNextcloudDir: vi.fn(),
+    transferFile: vi.fn(),
+    createDir: vi.fn(),
+    getDiskUsage: vi.fn(),
+  } as unknown as StackClient
+}
+
 describe('updateTracking', () => {
-  let mockStack: StackClient
-
-  beforeEach(() => {
-    mockStack = {
-      getTrackingDoc: vi.fn(),
-      updateTrackingDoc: vi.fn(),
-      listNextcloudDir: vi.fn(),
-      transferFile: vi.fn(),
-      createDir: vi.fn(),
-      getDiskUsage: vi.fn(),
-    } as unknown as StackClient
-  })
-
   it('reads, applies updater, and writes the doc', async () => {
     const doc = makeDoc()
-    vi.mocked(mockStack.getTrackingDoc).mockResolvedValueOnce(doc)
-    vi.mocked(mockStack.updateTrackingDoc).mockResolvedValueOnce({ ...doc, _rev: '2-def', status: 'running' })
+    const stack = makeMockStack(doc)
 
-    await updateTracking(mockStack, 'mig-1', (d) => ({ ...d, status: 'running' }))
+    await updateTracking(stack, 'mig-1', (d) => ({ ...d, status: 'running' }))
 
-    expect(mockStack.getTrackingDoc).toHaveBeenCalledWith('mig-1')
-    expect(mockStack.updateTrackingDoc).toHaveBeenCalledWith({ ...doc, status: 'running' })
+    expect(stack.getTrackingDoc).toHaveBeenCalledWith('mig-1')
+    expect(stack.updateTrackingDoc).toHaveBeenCalledWith({ ...doc, status: 'running' })
   })
 
-  it('retries on 409 conflict up to 5 times', async () => {
+  it('retries on 409 conflict', async () => {
     const doc = makeDoc()
+    const stack = makeMockStack(doc)
     const error409 = new Error('Stack request failed (409): conflict')
-    vi.mocked(mockStack.getTrackingDoc).mockResolvedValue(doc)
-    vi.mocked(mockStack.updateTrackingDoc)
+    vi.mocked(stack.updateTrackingDoc)
       .mockRejectedValueOnce(error409)
       .mockRejectedValueOnce(error409)
       .mockResolvedValueOnce({ ...doc, _rev: '2-def', status: 'running' })
 
-    await updateTracking(mockStack, 'mig-1', (d) => ({ ...d, status: 'running' }))
+    await updateTracking(stack, 'mig-1', (d) => ({ ...d, status: 'running' }))
 
-    // 1 initial + 2 retries = 3 calls to getTrackingDoc (re-read on each retry)
-    expect(mockStack.getTrackingDoc).toHaveBeenCalledTimes(3)
-    expect(mockStack.updateTrackingDoc).toHaveBeenCalledTimes(3)
+    expect(stack.getTrackingDoc).toHaveBeenCalledTimes(3)
+    expect(stack.updateTrackingDoc).toHaveBeenCalledTimes(3)
   })
 
   it('throws after 5 consecutive 409 conflicts', async () => {
-    const doc = makeDoc()
-    const error409 = new Error('Stack request failed (409): conflict')
-    vi.mocked(mockStack.getTrackingDoc).mockResolvedValue(doc)
-    vi.mocked(mockStack.updateTrackingDoc).mockRejectedValue(error409)
+    const stack = makeMockStack()
+    vi.mocked(stack.updateTrackingDoc).mockRejectedValue(new Error('Stack request failed (409): conflict'))
 
     await expect(
-      updateTracking(mockStack, 'mig-1', (d) => ({ ...d, status: 'running' }))
+      updateTracking(stack, 'mig-1', (d) => ({ ...d, status: 'running' }))
     ).rejects.toThrow('409')
   })
 
   it('throws non-409 errors immediately', async () => {
-    const doc = makeDoc()
-    vi.mocked(mockStack.getTrackingDoc).mockResolvedValue(doc)
-    vi.mocked(mockStack.updateTrackingDoc).mockRejectedValueOnce(
-      new Error('Stack request failed (500): internal error')
-    )
+    const stack = makeMockStack()
+    vi.mocked(stack.updateTrackingDoc).mockRejectedValueOnce(new Error('Stack request failed (500): internal'))
 
     await expect(
-      updateTracking(mockStack, 'mig-1', (d) => ({ ...d, status: 'running' }))
+      updateTracking(stack, 'mig-1', (d) => ({ ...d, status: 'running' }))
     ).rejects.toThrow('500')
   })
 })
 
-describe('helper functions', () => {
-  let mockStack: StackClient
+describe('setRunning', () => {
+  it('sets status, started_at, and progress.bytes_total', async () => {
+    const stack = makeMockStack()
+    await setRunning(stack, 'mig-1', 5000)
 
-  beforeEach(() => {
-    mockStack = {
-      getTrackingDoc: vi.fn().mockResolvedValue(makeDoc()),
-      updateTrackingDoc: vi.fn().mockImplementation(async (doc: TrackingDoc) => doc),
-      listNextcloudDir: vi.fn(),
-      transferFile: vi.fn(),
-      createDir: vi.fn(),
-      getDiskUsage: vi.fn(),
-    } as unknown as StackClient
-  })
-
-  it('setRunning sets status, started_at, and bytes_total', async () => {
-    await setRunning(mockStack, 'mig-1', 5000)
-
-    const calledDoc = vi.mocked(mockStack.updateTrackingDoc).mock.calls[0][0]
+    const calledDoc = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
     expect(calledDoc.status).toBe('running')
     expect(calledDoc.started_at).toBeDefined()
     expect(calledDoc.progress.bytes_total).toBe(5000)
   })
+})
 
-  it('setCompleted sets status and finished_at', async () => {
-    await setCompleted(mockStack, 'mig-1')
+describe('setCompleted', () => {
+  it('sets status and finished_at', async () => {
+    const stack = makeMockStack()
+    await setCompleted(stack, 'mig-1')
 
-    const calledDoc = vi.mocked(mockStack.updateTrackingDoc).mock.calls[0][0]
+    const calledDoc = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
     expect(calledDoc.status).toBe('completed')
     expect(calledDoc.finished_at).toBeDefined()
   })
+})
 
-  it('setFailed sets status, finished_at, and appends error with at timestamp', async () => {
-    await setFailed(mockStack, 'mig-1', 'something broke')
+describe('setFailed', () => {
+  it('sets status, finished_at, and appends error with timestamp', async () => {
+    const stack = makeMockStack()
+    await setFailed(stack, 'mig-1', 'something broke')
 
-    const calledDoc = vi.mocked(mockStack.updateTrackingDoc).mock.calls[0][0]
+    const calledDoc = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
     expect(calledDoc.status).toBe('failed')
     expect(calledDoc.finished_at).toBeDefined()
-    expect(calledDoc.errors[0].path).toBe('')
-    expect(calledDoc.errors[0].message).toBe('something broke')
+    expect(calledDoc.errors[0]).toMatchObject({ path: '', message: 'something broke' })
     expect(calledDoc.errors[0].at).toBeDefined()
   })
+})
 
-  it('incrementProgress adds to bytes_imported and files_imported', async () => {
-    await incrementProgress(mockStack, 'mig-1', 1024)
+describe('flushProgress', () => {
+  it('merges local deltas into the remote doc in a single write', async () => {
+    const doc = makeDoc({
+      progress: { bytes_imported: 100, files_imported: 2, bytes_total: 0, files_total: 0 },
+      errors: [{ path: '/old.txt', message: 'old error', at: '2024-01-01T00:00:00Z' }],
+    })
+    const stack = makeMockStack(doc)
 
-    const calledDoc = vi.mocked(mockStack.updateTrackingDoc).mock.calls[0][0]
-    expect(calledDoc.progress.bytes_imported).toBe(1024)
-    expect(calledDoc.progress.files_imported).toBe(1)
-  })
+    await flushProgress(stack, 'mig-1', {
+      bytesImported: 500,
+      filesImported: 3,
+      bytesTotal: 9000,
+      filesTotal: 20,
+      errors: [{ path: '/new.txt', message: 'new error', at: '2024-01-02T00:00:00Z' }],
+      skipped: [{ path: '/dup.txt', reason: 'already exists', size: 42 }],
+    })
 
-  it('updateBytesTotal sets bytes_total and files_total in progress', async () => {
-    await updateBytesTotal(mockStack, 'mig-1', 9000, 12)
-
-    const calledDoc = vi.mocked(mockStack.updateTrackingDoc).mock.calls[0][0]
+    const calledDoc = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
+    // Deltas are added to existing values
+    expect(calledDoc.progress.bytes_imported).toBe(600)
+    expect(calledDoc.progress.files_imported).toBe(5)
+    // Totals are replaced (latest discovered values)
     expect(calledDoc.progress.bytes_total).toBe(9000)
-    expect(calledDoc.progress.files_total).toBe(12)
+    expect(calledDoc.progress.files_total).toBe(20)
+    // Errors and skipped are appended
+    expect(calledDoc.errors).toHaveLength(2)
+    expect(calledDoc.skipped).toHaveLength(1)
   })
 
-  it('addError appends to errors array with at field', async () => {
-    await addError(mockStack, 'mig-1', '/bad-file.txt', 'transfer failed')
+  it('retries on 409 with reapplied patch', async () => {
+    const stack = makeMockStack()
+    vi.mocked(stack.updateTrackingDoc)
+      .mockRejectedValueOnce(new Error('Stack request failed (409): conflict'))
+      .mockResolvedValueOnce(makeDoc())
 
-    const calledDoc = vi.mocked(mockStack.updateTrackingDoc).mock.calls[0][0]
-    expect(calledDoc.errors[0].path).toBe('/bad-file.txt')
-    expect(calledDoc.errors[0].message).toBe('transfer failed')
-    expect(calledDoc.errors[0].at).toBeDefined()
-  })
+    await flushProgress(stack, 'mig-1', {
+      bytesImported: 100, filesImported: 1,
+      bytesTotal: 100, filesTotal: 1,
+      errors: [], skipped: [],
+    })
 
-  it('addSkipped appends to skipped array', async () => {
-    await addSkipped(mockStack, 'mig-1', '/huge.iso', 'exceeds quota', 999999)
-
-    const calledDoc = vi.mocked(mockStack.updateTrackingDoc).mock.calls[0][0]
-    expect(calledDoc.skipped).toContainEqual({ path: '/huge.iso', reason: 'exceeds quota', size: 999999 })
+    // Re-reads doc and reapplies patch
+    expect(stack.getTrackingDoc).toHaveBeenCalledTimes(2)
+    expect(stack.updateTrackingDoc).toHaveBeenCalledTimes(2)
   })
 })
