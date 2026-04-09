@@ -1,4 +1,5 @@
 import type { Logger } from 'pino'
+import { CozyStackClient, AppToken } from 'cozy-stack-client'
 import type { ClouderyClient } from './cloudery-client.js'
 import type {
   NextcloudEntry,
@@ -17,15 +18,10 @@ export interface StackClient {
 }
 
 const MIGRATIONS_DOCTYPE = 'io.cozy.nextcloud.migrations'
-
-function stripLeadingSlash(path: string): string {
-  return path.startsWith('/') ? path.slice(1) : path
-}
+const NC_FILES_DOCTYPE = 'io.cozy.remote.nextcloud.files'
 
 /**
- * Creates an HTTP client for the Cozy Stack API with automatic 401 token refresh.
- * Only logs on errors and retries — success-path HTTP details are not logged
- * (the caller emits the business-level event).
+ * Creates a StackClient backed by cozy-stack-client with automatic token refresh.
  * @param workplaceFqdn - FQDN of the target Cozy instance
  * @param initialToken - JWT token obtained from the Cloudery
  * @param clouderyClient - Used to refresh the token on 401
@@ -38,67 +34,68 @@ export function createStackClient(
   clouderyClient: ClouderyClient,
   logger: Logger
 ): StackClient {
-  const baseUrl = `https://${workplaceFqdn}`
-  let token = initialToken
+  const cozy = new CozyStackClient({
+    uri: `https://${workplaceFqdn}`,
+    token: new AppToken(initialToken),
+  })
 
-  async function request(
-    method: string,
-    path: string,
-    options: RequestInit = {},
-    allowedStatuses: number[] = []
-  ): Promise<{ response: Response; body: string; duration_ms: number }> {
-    const start = Date.now()
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
-      ...(options.headers as Record<string, string> ?? {}),
-    }
+  const ncCollection = cozy.collection(NC_FILES_DOCTYPE) as InstanceType<typeof import('cozy-stack-client').NextcloudFilesCollection>
+  const docCollection = cozy.collection(MIGRATIONS_DOCTYPE)
+  const settingsCollection = cozy.collection('io.cozy.settings') as InstanceType<typeof import('cozy-stack-client').SettingsCollection>
+  const fileCollection = cozy.collection('io.cozy.files') as InstanceType<typeof import('cozy-stack-client').FileCollection>
 
-    let response = await fetch(`${baseUrl}${path}`, { ...options, method, headers })
-
-    if (response.status === 401) {
-      logger.warn({
-        event: 'stack.token_refresh',
-        method,
-        path,
-        duration_ms: Date.now() - start,
-      }, 'Stack returned 401, refreshing token')
-      token = await clouderyClient.getToken(workplaceFqdn)
-      const retryHeaders = { ...headers, Authorization: `Bearer ${token}` }
-      response = await fetch(`${baseUrl}${path}`, { ...options, method, headers: retryHeaders })
-    }
-
-    const body = await response.text()
-    const duration_ms = Date.now() - start
-
-    if (!response.ok && !allowedStatuses.includes(response.status)) {
+  async function withTokenRefresh<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation()
+    } catch (error: unknown) {
+      const status = (error as { status?: number }).status
+      if (status === 401) {
+        logger.warn({ event: 'stack.token_refresh' }, 'Stack returned 401, refreshing token')
+        const newToken = await clouderyClient.getToken(workplaceFqdn)
+        cozy.setToken(new AppToken(newToken))
+        return await operation()
+      }
+      const message = error instanceof Error ? error.message : String(error)
       logger.error({
         event: 'stack.request_failed',
-        method,
-        path,
-        status: response.status,
-        duration_ms,
-        error: body,
+        status,
+        error: message,
       }, 'Stack request failed')
-      throw new Error(`Stack request failed (${response.status}): ${body}`)
+      throw error
     }
-
-    return { response, body, duration_ms }
   }
 
   return {
     async listNextcloudDir(accountId: string, path: string): Promise<NextcloudEntry[]> {
-      const reqPath = `/remote/nextcloud/${accountId}/${stripLeadingSlash(path)}`
-      const { body } = await request('GET', reqPath)
-      return JSON.parse(body) as NextcloudEntry[]
+      const { data } = await withTokenRefresh(() =>
+        ncCollection.find({
+          'cozyMetadata.sourceAccount': accountId,
+          parentPath: path,
+        })
+      ) as { data: Array<Record<string, unknown>> }
+
+      return data.map((entry) => ({
+        type: entry.type as 'file' | 'directory',
+        name: entry.name as string,
+        path: entry.path as string,
+        size: Number(entry.size ?? 0),
+        mime: (entry.mime as string) ?? '',
+      }))
     },
 
     async transferFile(accountId: string, ncPath: string, cozyDirId: string): Promise<CozyFile> {
-      const reqPath = `/remote/nextcloud/${accountId}/downstream/${stripLeadingSlash(ncPath)}?To=${cozyDirId}&Copy=true`
-      const { body } = await request('POST', reqPath)
-      const parsed = JSON.parse(body) as { data: { id: string; attributes: Record<string, unknown> } }
-      const attrs = parsed.data.attributes
+      const resp = await withTokenRefresh(() =>
+        ncCollection.moveToCozy(
+          { path: ncPath, cozyMetadata: { sourceAccount: accountId } },
+          { _id: cozyDirId },
+          { copy: true, FailOnConflict: true }
+        )
+      )
+
+      const body = await resp.json() as { data: { id: string; attributes: Record<string, unknown> } }
+      const attrs = body.data.attributes
       return {
-        id: parsed.data.id,
+        id: body.data.id,
         name: attrs.name as string,
         dir_id: attrs.dir_id as string,
         size: typeof attrs.size === 'string' ? parseInt(attrs.size, 10) : (attrs.size as number),
@@ -106,43 +103,50 @@ export function createStackClient(
     },
 
     async createDir(parentDirId: string, name: string): Promise<string> {
-      const reqPath = `/files/${parentDirId}?Name=${name}&Type=directory`
-      const { response, body } = await request('POST', reqPath, {}, [409])
-
-      if (response.status === 409) {
-        const conflict = JSON.parse(body) as { errors?: Array<{ source?: { id?: string } }> }
-        const existingId = conflict.errors?.[0]?.source?.id
-        if (!existingId) {
-          throw new Error(`Stack 409 on createDir but no existing dir ID in response: ${body}`)
+      try {
+        const { data } = await withTokenRefresh(() =>
+          fileCollection.createDirectory({ name, dirId: parentDirId })
+        )
+        return data._id as string
+      } catch (error: unknown) {
+        const status = (error as { status?: number }).status
+        if (status === 409) {
+          // Directory already exists — extract ID from the conflict response
+          const response = (error as { response?: Response }).response
+          if (response) {
+            const body = await response.json() as { errors?: Array<{ source?: { id?: string } }> }
+            const existingId = body.errors?.[0]?.source?.id
+            if (existingId) return existingId
+          }
+          throw new Error(`Stack 409 on createDir but could not extract existing dir ID`)
         }
-        return existingId
+        throw error
       }
-
-      const created = JSON.parse(body) as { data: { id: string } }
-      return created.data.id
     },
 
     async getDiskUsage(): Promise<DiskUsage> {
-      const { body } = await request('GET', '/settings/disk-usage')
-      const parsed = JSON.parse(body) as { data: { attributes: { used: string; quota: string } } }
+      const { data } = await withTokenRefresh(() =>
+        settingsCollection.get('io.cozy.settings.disk-usage')
+      )
+      const attrs = data.attributes as Record<string, string>
       return {
-        used: parseInt(parsed.data.attributes.used, 10),
-        quota: parseInt(parsed.data.attributes.quota, 10),
+        used: parseInt(attrs.used, 10),
+        quota: parseInt(attrs.quota, 10),
       }
     },
 
     async getTrackingDoc(id: string): Promise<TrackingDoc> {
-      const { body } = await request('GET', `/data/${MIGRATIONS_DOCTYPE}/${id}`)
-      return JSON.parse(body) as TrackingDoc
+      const { data } = await withTokenRefresh(() =>
+        docCollection.get(id)
+      )
+      return data as unknown as TrackingDoc
     },
 
     async updateTrackingDoc(doc: TrackingDoc): Promise<TrackingDoc> {
-      const { body } = await request('PUT', `/data/${MIGRATIONS_DOCTYPE}/${doc._id}`, {
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(doc),
-      })
-      const result = JSON.parse(body) as { ok: boolean; id: string; rev: string }
-      return { ...doc, _rev: result.rev }
+      const { data } = await withTokenRefresh(() =>
+        docCollection.update(doc as unknown as Record<string, unknown>)
+      )
+      return { ...doc, _rev: data._rev as string }
     },
   }
 }
