@@ -3,7 +3,7 @@ import { RabbitMQClient, type RabbitMQMessage } from '@linagora/rabbitmq-client'
 import { loadConfig } from './config.js'
 import { createClouderyClient } from './cloudery-client.js'
 import { handleMigrationMessage } from './consumer.js'
-import type { MigrationCommand } from './types.js'
+import { parseMigrationCommand } from './types.js'
 
 const EXCHANGE = 'migration'
 const ROUTING_KEY = 'nextcloud.migration.requested'
@@ -33,7 +33,8 @@ async function main(): Promise<void> {
     ROUTING_KEY,
     QUEUE,
     async (msg: RabbitMQMessage) => {
-      await handleMigrationMessage(msg as unknown as MigrationCommand, clouderyClient, logger)
+      const command = parseMigrationCommand(msg)
+      await handleMigrationMessage(command, clouderyClient, logger)
     }
   )
   logger.info({ exchange: EXCHANGE, queue: QUEUE, routingKey: ROUTING_KEY }, 'Subscribed to migration queue')

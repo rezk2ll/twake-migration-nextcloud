@@ -82,8 +82,12 @@ export function createStackClient(
       )
       const body = await response.text()
       if (response.status === 409) {
-        const conflict = JSON.parse(body) as { errors: Array<{ source: { id: string } }> }
-        return conflict.errors[0].source.id
+        const conflict = JSON.parse(body) as { errors?: Array<{ source?: { id?: string } }> }
+        const existingId = conflict.errors?.[0]?.source?.id
+        if (!existingId) {
+          throw new Error(`Stack 409 on createDir but no existing dir ID in response: ${body}`)
+        }
+        return existingId
       }
       assertOk(response, body)
       const created = JSON.parse(body) as { data: { id: string } }

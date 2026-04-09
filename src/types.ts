@@ -57,6 +57,26 @@ export interface DiskUsage {
   quota: number
 }
 
+export function parseMigrationCommand(msg: Record<string, unknown>): MigrationCommand {
+  const { migrationId, workplaceFqdn, accountId, sourcePath, timestamp } = msg
+  if (typeof migrationId !== 'string' || !migrationId) {
+    throw new Error(`Invalid migration message: missing or empty migrationId`)
+  }
+  if (typeof workplaceFqdn !== 'string' || !workplaceFqdn) {
+    throw new Error(`Invalid migration message: missing or empty workplaceFqdn`)
+  }
+  if (typeof accountId !== 'string' || !accountId) {
+    throw new Error(`Invalid migration message: missing or empty accountId`)
+  }
+  return {
+    migrationId,
+    workplaceFqdn,
+    accountId,
+    sourcePath: typeof sourcePath === 'string' ? sourcePath : '/',
+    timestamp: typeof timestamp === 'number' ? timestamp : Date.now(),
+  }
+}
+
 /** Parsed and validated environment config. */
 export interface Config {
   rabbitmqUrl: string

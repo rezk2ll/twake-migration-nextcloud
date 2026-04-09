@@ -7,6 +7,7 @@ import {
   setFailed,
   incrementProgress,
   addError,
+  addSkipped,
   isConflictError,
 } from './tracking.js'
 
@@ -19,7 +20,7 @@ interface MigrationContext {
   logger: Logger
 }
 
-async function calculateTotalBytes(
+export async function calculateTotalBytes(
   stackClient: StackClient,
   accountId: string,
   path: string
@@ -48,9 +49,15 @@ async function traverseDir(
 
   for (const entry of entries) {
     if (entry.type === 'directory') {
-      const subDirId = await ctx.stackClient.createDir(cozyDirId, entry.name)
-      const subEntries = await ctx.stackClient.listNextcloudDir(accountId, entry.path)
-      await traverseDir(subDirId, subEntries, ctx)
+      try {
+        const subDirId = await ctx.stackClient.createDir(cozyDirId, entry.name)
+        const subEntries = await ctx.stackClient.listNextcloudDir(accountId, entry.path)
+        await traverseDir(subDirId, subEntries, ctx)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        ctx.logger.error({ path: entry.path, error: message }, 'Directory traversal failed')
+        await addError(ctx.stackClient, migrationId, entry.path, message)
+      }
     } else {
       try {
         const file = await ctx.stackClient.transferFile(accountId, entry.path, cozyDirId)
@@ -58,6 +65,7 @@ async function traverseDir(
       } catch (error) {
         if (isConflictError(error)) {
           ctx.logger.info({ path: entry.path }, 'File already exists, skipping')
+          await addSkipped(ctx.stackClient, migrationId, entry.path, 'already exists', entry.size)
           continue
         }
         const message = error instanceof Error ? error.message : String(error)

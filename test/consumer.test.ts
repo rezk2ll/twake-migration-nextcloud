@@ -8,6 +8,7 @@ import type { Logger } from 'pino'
 // Mock the migration module so runMigration doesn't actually execute
 vi.mock('../src/migration.js', () => ({
   runMigration: vi.fn().mockResolvedValue(undefined),
+  calculateTotalBytes: vi.fn().mockResolvedValue({ totalBytes: 0, entries: [] }),
 }))
 
 // Mock stack-client factory
@@ -15,7 +16,7 @@ vi.mock('../src/stack-client.js', () => ({
   createStackClient: vi.fn(),
 }))
 
-import { runMigration } from '../src/migration.js'
+import { runMigration, calculateTotalBytes } from '../src/migration.js'
 import { createStackClient } from '../src/stack-client.js'
 
 const logger = {
@@ -110,17 +111,23 @@ describe('handleMigrationMessage', () => {
 
   it('marks migration as failed if quota is insufficient', async () => {
     vi.mocked(mockStack.getDiskUsage).mockResolvedValueOnce({ used: 99000, quota: 100000 })
-    vi.mocked(mockStack.listNextcloudDir).mockResolvedValueOnce([
-      { type: 'file', name: 'big.zip', path: '/big.zip', size: 50000, mime: 'application/zip' },
-    ])
+    vi.mocked(calculateTotalBytes).mockResolvedValueOnce({ totalBytes: 50000, entries: [] })
 
     await handleMigrationMessage(makeCommand(), mockCloudery, logger)
 
     expect(runMigration).not.toHaveBeenCalled()
-    // Should have updated tracking doc to failed
     const failedUpdate = vi.mocked(mockStack.updateTrackingDoc).mock.calls
       .find((c) => (c[0] as TrackingDoc).status === 'failed')
     expect(failedUpdate).toBeDefined()
+  })
+
+  it('skips quota check when quota is 0 (unlimited)', async () => {
+    vi.mocked(mockStack.getDiskUsage).mockResolvedValueOnce({ used: 99000, quota: 0 })
+    vi.mocked(calculateTotalBytes).mockResolvedValueOnce({ totalBytes: 999999, entries: [] })
+
+    await handleMigrationMessage(makeCommand(), mockCloudery, logger)
+
+    expect(runMigration).toHaveBeenCalled()
   })
 
   it('throws on Cloudery failure (triggers retry/DLQ)', async () => {
