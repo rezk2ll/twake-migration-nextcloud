@@ -5,6 +5,7 @@ import {
   setCompleted,
   setFailed,
   incrementProgress,
+  updateBytesTotal,
   addError,
   addSkipped,
 } from '../src/tracking.js'
@@ -16,11 +17,17 @@ function makeDoc(overrides: Partial<TrackingDoc> = {}): TrackingDoc {
     _id: 'mig-1',
     _rev: '1-abc',
     status: 'pending',
-    bytes_total: 0,
-    bytes_imported: 0,
-    files_imported: 0,
+    target_dir: 'io.cozy.files.root-dir',
+    progress: {
+      files_imported: 0,
+      files_total: 0,
+      bytes_imported: 0,
+      bytes_total: 0,
+    },
     errors: [],
     skipped: [],
+    started_at: null,
+    finished_at: null,
     ...overrides,
   }
 }
@@ -110,7 +117,7 @@ describe('helper functions', () => {
     const calledDoc = vi.mocked(mockStack.updateTrackingDoc).mock.calls[0][0]
     expect(calledDoc.status).toBe('running')
     expect(calledDoc.started_at).toBeDefined()
-    expect(calledDoc.bytes_total).toBe(5000)
+    expect(calledDoc.progress.bytes_total).toBe(5000)
   })
 
   it('setCompleted sets status and finished_at', async () => {
@@ -121,28 +128,40 @@ describe('helper functions', () => {
     expect(calledDoc.finished_at).toBeDefined()
   })
 
-  it('setFailed sets status, finished_at, and appends error', async () => {
+  it('setFailed sets status, finished_at, and appends error with at timestamp', async () => {
     await setFailed(mockStack, 'mig-1', 'something broke')
 
     const calledDoc = vi.mocked(mockStack.updateTrackingDoc).mock.calls[0][0]
     expect(calledDoc.status).toBe('failed')
     expect(calledDoc.finished_at).toBeDefined()
-    expect(calledDoc.errors).toContainEqual({ path: '', message: 'something broke' })
+    expect(calledDoc.errors[0].path).toBe('')
+    expect(calledDoc.errors[0].message).toBe('something broke')
+    expect(calledDoc.errors[0].at).toBeDefined()
   })
 
   it('incrementProgress adds to bytes_imported and files_imported', async () => {
     await incrementProgress(mockStack, 'mig-1', 1024)
 
     const calledDoc = vi.mocked(mockStack.updateTrackingDoc).mock.calls[0][0]
-    expect(calledDoc.bytes_imported).toBe(1024)
-    expect(calledDoc.files_imported).toBe(1)
+    expect(calledDoc.progress.bytes_imported).toBe(1024)
+    expect(calledDoc.progress.files_imported).toBe(1)
   })
 
-  it('addError appends to errors array', async () => {
+  it('updateBytesTotal sets bytes_total and files_total in progress', async () => {
+    await updateBytesTotal(mockStack, 'mig-1', 9000, 12)
+
+    const calledDoc = vi.mocked(mockStack.updateTrackingDoc).mock.calls[0][0]
+    expect(calledDoc.progress.bytes_total).toBe(9000)
+    expect(calledDoc.progress.files_total).toBe(12)
+  })
+
+  it('addError appends to errors array with at field', async () => {
     await addError(mockStack, 'mig-1', '/bad-file.txt', 'transfer failed')
 
     const calledDoc = vi.mocked(mockStack.updateTrackingDoc).mock.calls[0][0]
-    expect(calledDoc.errors).toContainEqual({ path: '/bad-file.txt', message: 'transfer failed' })
+    expect(calledDoc.errors[0].path).toBe('/bad-file.txt')
+    expect(calledDoc.errors[0].message).toBe('transfer failed')
+    expect(calledDoc.errors[0].at).toBeDefined()
   })
 
   it('addSkipped appends to skipped array', async () => {

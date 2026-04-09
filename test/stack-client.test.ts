@@ -45,10 +45,16 @@ describe('StackClient', () => {
   })
 
   describe('transferFile', () => {
-    it('calls downstream route with correct params', async () => {
-      const cozyFile = { _id: 'file-1', _rev: '1-abc', type: 'file', name: 'doc.pdf', dir_id: 'dir-1', size: 1024 }
+    it('calls downstream route with correct params and unwraps JSON-API response', async () => {
+      const jsonApiResponse = {
+        data: {
+          id: 'file-1',
+          type: 'io.cozy.files',
+          attributes: { name: 'doc.pdf', dir_id: 'dir-1', size: '1024' },
+        },
+      }
       mockFetch.mockResolvedValueOnce(
-        new Response(JSON.stringify(cozyFile), { status: 201 })
+        new Response(JSON.stringify(jsonApiResponse), { status: 201 })
       )
 
       const client = createStackClient(FQDN, TOKEN, mockCloudery)
@@ -58,7 +64,10 @@ describe('StackClient', () => {
         'https://alice.cozy.example/remote/nextcloud/acc-123/downstream/doc.pdf?To=dir-1&Copy=true',
         expect.objectContaining({ method: 'POST' })
       )
-      expect(result).toEqual(cozyFile)
+      expect(result.id).toBe('file-1')
+      expect(result.name).toBe('doc.pdf')
+      expect(result.dir_id).toBe('dir-1')
+      expect(result.size).toBe(1024)
     })
   })
 
@@ -106,9 +115,15 @@ describe('StackClient', () => {
   describe('getTrackingDoc', () => {
     it('fetches the tracking document', async () => {
       const doc: TrackingDoc = {
-        _id: 'mig-1', _rev: '1-abc', status: 'pending',
-        bytes_total: 0, bytes_imported: 0, files_imported: 0,
-        errors: [], skipped: [],
+        _id: 'mig-1',
+        _rev: '1-abc',
+        status: 'pending',
+        target_dir: 'io.cozy.files.root-dir',
+        progress: { files_imported: 0, files_total: 0, bytes_imported: 0, bytes_total: 0 },
+        errors: [],
+        skipped: [],
+        started_at: null,
+        finished_at: null,
       }
       mockFetch.mockResolvedValueOnce(
         new Response(JSON.stringify(doc), { status: 200 })
@@ -130,15 +145,20 @@ describe('StackClient', () => {
   })
 
   describe('updateTrackingDoc', () => {
-    it('PUTs the doc and returns the updated version', async () => {
+    it('PUTs the doc and returns the doc with updated _rev', async () => {
       const doc: TrackingDoc = {
-        _id: 'mig-1', _rev: '1-abc', status: 'running',
-        bytes_total: 5000, bytes_imported: 0, files_imported: 0,
-        errors: [], skipped: [],
+        _id: 'mig-1',
+        _rev: '1-abc',
+        status: 'running',
+        target_dir: 'io.cozy.files.root-dir',
+        progress: { files_imported: 0, files_total: 0, bytes_imported: 0, bytes_total: 5000 },
+        errors: [],
+        skipped: [],
+        started_at: '2024-01-01T00:00:00.000Z',
+        finished_at: null,
       }
-      const updated = { ...doc, _rev: '2-def' }
       mockFetch.mockResolvedValueOnce(
-        new Response(JSON.stringify(updated), { status: 200 })
+        new Response(JSON.stringify({ ok: true, id: 'mig-1', rev: '2-def' }), { status: 200 })
       )
 
       const client = createStackClient(FQDN, TOKEN, mockCloudery)
@@ -151,7 +171,7 @@ describe('StackClient', () => {
           body: JSON.stringify(doc),
         })
       )
-      expect(result).toEqual(updated)
+      expect(result).toEqual({ ...doc, _rev: '2-def' })
     })
   })
 

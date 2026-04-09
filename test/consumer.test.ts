@@ -8,7 +8,6 @@ import type { Logger } from 'pino'
 // Mock the migration module so runMigration doesn't actually execute
 vi.mock('../src/migration.js', () => ({
   runMigration: vi.fn().mockResolvedValue(undefined),
-  calculateTotalBytes: vi.fn().mockResolvedValue({ totalBytes: 0, entries: [] }),
 }))
 
 // Mock stack-client factory
@@ -16,7 +15,7 @@ vi.mock('../src/stack-client.js', () => ({
   createStackClient: vi.fn(),
 }))
 
-import { runMigration, calculateTotalBytes } from '../src/migration.js'
+import { runMigration } from '../src/migration.js'
 import { createStackClient } from '../src/stack-client.js'
 
 const logger = {
@@ -35,6 +34,21 @@ function makeCommand(overrides: Partial<MigrationCommand> = {}): MigrationComman
   }
 }
 
+function makePendingDoc(overrides: Partial<TrackingDoc> = {}): TrackingDoc {
+  return {
+    _id: 'mig-1',
+    _rev: '1-abc',
+    status: 'pending',
+    target_dir: 'io.cozy.files.root-dir',
+    progress: { files_imported: 0, files_total: 0, bytes_imported: 0, bytes_total: 0 },
+    errors: [],
+    skipped: [],
+    started_at: null,
+    finished_at: null,
+    ...overrides,
+  }
+}
+
 describe('handleMigrationMessage', () => {
   let mockCloudery: ClouderyClient
   let mockStack: StackClient
@@ -47,11 +61,7 @@ describe('handleMigrationMessage', () => {
     }
 
     mockStack = {
-      getTrackingDoc: vi.fn().mockResolvedValue({
-        _id: 'mig-1', _rev: '1-abc', status: 'pending',
-        bytes_total: 0, bytes_imported: 0, files_imported: 0,
-        errors: [], skipped: [],
-      } satisfies TrackingDoc),
+      getTrackingDoc: vi.fn().mockResolvedValue(makePendingDoc()),
       getDiskUsage: vi.fn().mockResolvedValue({ used: 1000, quota: 100000 }),
       listNextcloudDir: vi.fn().mockResolvedValue([]),
       updateTrackingDoc: vi.fn().mockImplementation(async (doc: TrackingDoc) => doc),
@@ -74,11 +84,12 @@ describe('handleMigrationMessage', () => {
   })
 
   it('skips migration if status is completed', async () => {
-    vi.mocked(mockStack.getTrackingDoc).mockResolvedValueOnce({
-      _id: 'mig-1', _rev: '1-abc', status: 'completed',
-      bytes_total: 5000, bytes_imported: 5000, files_imported: 10,
-      errors: [], skipped: [],
-    } satisfies TrackingDoc)
+    vi.mocked(mockStack.getTrackingDoc).mockResolvedValueOnce(makePendingDoc({
+      status: 'completed',
+      progress: { files_imported: 10, files_total: 10, bytes_imported: 5000, bytes_total: 5000 },
+      started_at: '2024-01-01T00:00:00.000Z',
+      finished_at: '2024-01-01T00:01:00.000Z',
+    }))
 
     await handleMigrationMessage(makeCommand(), mockCloudery, logger)
 
@@ -86,11 +97,11 @@ describe('handleMigrationMessage', () => {
   })
 
   it('skips migration if status is running', async () => {
-    vi.mocked(mockStack.getTrackingDoc).mockResolvedValueOnce({
-      _id: 'mig-1', _rev: '1-abc', status: 'running',
-      bytes_total: 5000, bytes_imported: 2000, files_imported: 5,
-      errors: [], skipped: [],
-    } satisfies TrackingDoc)
+    vi.mocked(mockStack.getTrackingDoc).mockResolvedValueOnce(makePendingDoc({
+      status: 'running',
+      progress: { files_imported: 5, files_total: 10, bytes_imported: 2000, bytes_total: 5000 },
+      started_at: '2024-01-01T00:00:00.000Z',
+    }))
 
     await handleMigrationMessage(makeCommand(), mockCloudery, logger)
 
@@ -98,11 +109,13 @@ describe('handleMigrationMessage', () => {
   })
 
   it('proceeds if status is failed (retry scenario)', async () => {
-    vi.mocked(mockStack.getTrackingDoc).mockResolvedValueOnce({
-      _id: 'mig-1', _rev: '1-abc', status: 'failed',
-      bytes_total: 5000, bytes_imported: 2000, files_imported: 5,
-      errors: [{ path: '/x', message: 'boom' }], skipped: [],
-    } satisfies TrackingDoc)
+    vi.mocked(mockStack.getTrackingDoc).mockResolvedValueOnce(makePendingDoc({
+      status: 'failed',
+      progress: { files_imported: 5, files_total: 10, bytes_imported: 2000, bytes_total: 5000 },
+      errors: [{ path: '/x', message: 'boom', at: '2024-01-01T00:00:00.000Z' }],
+      started_at: '2024-01-01T00:00:00.000Z',
+      finished_at: '2024-01-01T00:01:00.000Z',
+    }))
 
     await handleMigrationMessage(makeCommand(), mockCloudery, logger)
 
@@ -111,7 +124,10 @@ describe('handleMigrationMessage', () => {
 
   it('marks migration as failed if quota is insufficient', async () => {
     vi.mocked(mockStack.getDiskUsage).mockResolvedValueOnce({ used: 99000, quota: 100000 })
-    vi.mocked(calculateTotalBytes).mockResolvedValueOnce({ totalBytes: 50000, entries: [] })
+    // estimateSourceSize sums file sizes from listNextcloudDir
+    vi.mocked(mockStack.listNextcloudDir).mockResolvedValueOnce([
+      { type: 'file', name: 'large.zip', path: '/large.zip', size: 50000, mime: 'application/zip' },
+    ])
 
     await handleMigrationMessage(makeCommand(), mockCloudery, logger)
 
@@ -123,7 +139,10 @@ describe('handleMigrationMessage', () => {
 
   it('skips quota check when quota is 0 (unlimited)', async () => {
     vi.mocked(mockStack.getDiskUsage).mockResolvedValueOnce({ used: 99000, quota: 0 })
-    vi.mocked(calculateTotalBytes).mockResolvedValueOnce({ totalBytes: 999999, entries: [] })
+    // Even with large files, unlimited quota allows migration
+    vi.mocked(mockStack.listNextcloudDir).mockResolvedValueOnce([
+      { type: 'file', name: 'huge.iso', path: '/huge.iso', size: 999999, mime: 'application/octet-stream' },
+    ])
 
     await handleMigrationMessage(makeCommand(), mockCloudery, logger)
 

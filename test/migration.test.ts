@@ -7,13 +7,19 @@ import type { Logger } from 'pino'
 function makeStack(overrides: Partial<StackClient> = {}): StackClient {
   return {
     listNextcloudDir: vi.fn().mockResolvedValue([]),
-    transferFile: vi.fn().mockResolvedValue({ _id: 'f1', _rev: '1-a', type: 'file', name: 'f', dir_id: 'd', size: 100 }),
+    transferFile: vi.fn().mockResolvedValue({ id: 'f1', name: 'f', dir_id: 'd', size: 100 }),
     createDir: vi.fn().mockResolvedValue('dir-id'),
     getDiskUsage: vi.fn().mockResolvedValue({ used: 1000, quota: 100000 }),
     getTrackingDoc: vi.fn().mockResolvedValue({
-      _id: 'mig-1', _rev: '1-abc', status: 'pending',
-      bytes_total: 0, bytes_imported: 0, files_imported: 0,
-      errors: [], skipped: [],
+      _id: 'mig-1',
+      _rev: '1-abc',
+      status: 'pending',
+      target_dir: 'io.cozy.files.root-dir',
+      progress: { files_imported: 0, files_total: 0, bytes_imported: 0, bytes_total: 0 },
+      errors: [],
+      skipped: [],
+      started_at: null,
+      finished_at: null,
     } satisfies TrackingDoc),
     updateTrackingDoc: vi.fn().mockImplementation(async (doc: TrackingDoc) => ({ ...doc, _rev: 'next' })),
     ...overrides,
@@ -58,7 +64,7 @@ describe('runMigration', () => {
     expect(stack.transferFile).toHaveBeenCalledTimes(2)
     expect(stack.transferFile).toHaveBeenCalledWith('acc-123', '/photo.jpg', 'dir-id')
     expect(stack.transferFile).toHaveBeenCalledWith('acc-123', '/doc.pdf', 'dir-id')
-    // Updates tracking: running, 2x increment, completed
+    // Updates tracking: running, increments, updateBytesTotal, completed
     expect(stack.updateTrackingDoc).toHaveBeenCalled()
   })
 
@@ -71,9 +77,8 @@ describe('runMigration', () => {
     ]
     const stack = makeStack({
       listNextcloudDir: vi.fn()
-        .mockResolvedValueOnce(rootEntries)    // calculateTotalBytes('/')
-        .mockResolvedValueOnce(subEntries)     // calculateTotalBytes('/Photos')
-        .mockResolvedValueOnce(subEntries),    // traverseDir re-lists '/Photos'
+        .mockResolvedValueOnce(rootEntries)   // traverseDir lists root
+        .mockResolvedValueOnce(subEntries),   // traverseDir lists /Photos
       createDir: vi.fn()
         .mockResolvedValueOnce('nextcloud-dir')   // /Nextcloud
         .mockResolvedValueOnce('photos-dir'),      // /Nextcloud/Photos
@@ -118,7 +123,7 @@ describe('runMigration', () => {
       listNextcloudDir: vi.fn().mockResolvedValueOnce(entries),
       transferFile: vi.fn()
         .mockRejectedValueOnce(new Error('Stack request failed (500): internal'))
-        .mockResolvedValueOnce({ _id: 'f2', _rev: '1-b', type: 'file', name: 'good.txt', dir_id: 'd', size: 200 }),
+        .mockResolvedValueOnce({ id: 'f2', name: 'good.txt', dir_id: 'd', size: 200 }),
     })
 
     await runMigration(makeCommand(), stack, logger)
@@ -138,41 +143,27 @@ describe('runMigration', () => {
     ]
     const stack = makeStack({
       listNextcloudDir: vi.fn()
-        .mockResolvedValueOnce(entries)                                     // calculateTotalBytes('/')
-        .mockRejectedValueOnce(new Error('Stack request failed (403): forbidden'))  // calculateTotalBytes('/Broken')
-        .mockResolvedValueOnce(entries)                                     // traverseDir re-fetches... but actually calculateTotalBytes threw, so runMigration catches at top level
-    })
-
-    // calculateTotalBytes will throw when it tries to list /Broken, which propagates up to runMigration's catch
-    // and marks the migration as failed. This is current behavior.
-    // With the fix, directory errors in traverseDir are caught per-directory.
-    // But calculateTotalBytes still runs first and can throw.
-    // Let's test traverseDir resilience specifically: listing succeeds in calculateTotalBytes but createDir fails in traverseDir.
-    const stack2 = makeStack({
-      listNextcloudDir: vi.fn()
-        .mockResolvedValueOnce(entries)       // calculateTotalBytes('/')
-        .mockResolvedValueOnce([])            // calculateTotalBytes('/Broken') - empty dir
-        .mockResolvedValueOnce(entries),      // traverseDir processes root entries
+        .mockResolvedValueOnce(entries),      // traverseDir lists root
       createDir: vi.fn()
         .mockResolvedValueOnce('target-dir')  // /Nextcloud
         .mockRejectedValueOnce(new Error('Stack request failed (500): internal')),  // /Nextcloud/Broken fails
     })
 
-    await runMigration(makeCommand(), stack2, logger)
+    await runMigration(makeCommand(), stack, logger)
 
     // Migration should complete (not fail) because directory error is caught per-entry
-    const statusUpdates = vi.mocked(stack2.updateTrackingDoc).mock.calls
+    const statusUpdates = vi.mocked(stack.updateTrackingDoc).mock.calls
       .map((c) => (c[0] as TrackingDoc).status)
     expect(statusUpdates).toContain('completed')
     // Error for the broken directory should be recorded
-    const errorUpdates = vi.mocked(stack2.updateTrackingDoc).mock.calls
+    const errorUpdates = vi.mocked(stack.updateTrackingDoc).mock.calls
       .filter((c) => (c[0] as TrackingDoc).errors.length > 0)
     expect(errorUpdates.length).toBeGreaterThan(0)
     // The file sibling should still be transferred
-    expect(stack2.transferFile).toHaveBeenCalledWith('acc-123', '/ok.txt', 'target-dir')
+    expect(stack.transferFile).toHaveBeenCalledWith('acc-123', '/ok.txt', 'target-dir')
   })
 
-  it('calculates bytes_total from directory listing', async () => {
+  it('calls updateBytesTotal with discovered bytes and file counts after traversal', async () => {
     const entries: NextcloudEntry[] = [
       { type: 'file', name: 'a.txt', path: '/a.txt', size: 300, mime: 'text/plain' },
       { type: 'file', name: 'b.txt', path: '/b.txt', size: 700, mime: 'text/plain' },
@@ -183,10 +174,12 @@ describe('runMigration', () => {
 
     await runMigration(makeCommand(), stack, logger)
 
-    // setRunning should include bytes_total = 300 + 700 = 1000
-    const runningUpdate = vi.mocked(stack.updateTrackingDoc).mock.calls
-      .find((c) => (c[0] as TrackingDoc).status === 'running')
-    expect(runningUpdate).toBeDefined()
-    expect((runningUpdate![0] as TrackingDoc).bytes_total).toBe(1000)
+    // updateBytesTotal should be called with discovered totals: 300 + 700 = 1000 bytes, 2 files
+    const bytesTotalUpdate = vi.mocked(stack.updateTrackingDoc).mock.calls
+      .find((c) => {
+        const doc = c[0] as TrackingDoc
+        return doc.progress.bytes_total === 1000 && doc.progress.files_total === 2
+      })
+    expect(bytesTotalUpdate).toBeDefined()
   })
 })
