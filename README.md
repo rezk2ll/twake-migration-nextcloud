@@ -30,6 +30,7 @@ Copy `.env.example` to `.env` and fill in the values. See [docs/configuration.md
 
 - [Configuration](docs/configuration.md) — environment variables and setup
 - [Development](docs/development.md) — local dev, testing, project structure
+- [Local end-to-end testing](docs/local-testing.md) — run the full flow against a real Nextcloud without a Cloudery
 - [Docker](docs/docker.md) — building, running, and CI image publishing
 - [RabbitMQ contract](docs/rabbitmq.md) — exchange, queue, message format
 - [Tracking document](docs/tracking.md) — CouchDB schema, status transitions, fields
