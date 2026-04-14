@@ -92,4 +92,8 @@ export interface Config {
   clouderyToken: string
   logLevel: string
   flushInterval: number
+  /** URL scheme used when addressing the target Cozy Stack. Defaults to
+   * `https`; set `STACK_URL_SCHEME=http` for local development against a
+   * non-TLS Stack. */
+  stackUrlScheme: 'http' | 'https'
 }

@@ -29,6 +29,7 @@ const config: Config = {
   clouderyToken: 'secret',
   logLevel: 'info',
   flushInterval: 50,
+  stackUrlScheme: 'https',
 }
 
 function makeCommand(overrides: Partial<MigrationCommand> = {}): MigrationCommand {
@@ -86,7 +87,7 @@ describe('handleMigrationMessage', () => {
     await handleMigrationMessage(command, mockCloudery, logger, config)
 
     expect(mockCloudery.getToken).toHaveBeenCalledWith('alice.cozy.example')
-    expect(createStackClient).toHaveBeenCalledWith('alice.cozy.example', 'jwt-token', mockCloudery, expect.anything())
+    expect(createStackClient).toHaveBeenCalledWith('alice.cozy.example', 'https', 'jwt-token', mockCloudery, expect.anything())
     expect(mockStack.getTrackingDoc).toHaveBeenCalledWith('mig-1')
     expect(runMigration).toHaveBeenCalledWith(command, mockStack, logger, config.flushInterval)
   })

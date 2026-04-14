@@ -53,7 +53,13 @@ export async function handleMigrationMessage(
   migrationLogger.info({ event: 'consumer.message_received' }, 'Migration message received')
 
   const token = await clouderyClient.getToken(command.workplaceFqdn)
-  const stackClient = createStackClient(command.workplaceFqdn, token, clouderyClient, migrationLogger)
+  const stackClient = createStackClient(
+    command.workplaceFqdn,
+    config.stackUrlScheme,
+    token,
+    clouderyClient,
+    migrationLogger,
+  )
 
   const trackingDoc = await stackClient.getTrackingDoc(command.migrationId)
   if (trackingDoc.status === 'completed' || trackingDoc.status === 'running') {

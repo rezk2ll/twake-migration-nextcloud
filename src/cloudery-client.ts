@@ -1,4 +1,5 @@
 import type { Logger } from 'pino'
+import { MIGRATION_TOKEN_SCOPE } from './doctypes.js'
 
 export interface ClouderyClient {
   getToken(workplaceFqdn: string): Promise<string>
@@ -19,12 +20,17 @@ export function createClouderyClient(
   return {
     async getToken(workplaceFqdn: string): Promise<string> {
       const start = Date.now()
-      const url = `${clouderyUrl}/api/public/instances/${workplaceFqdn}/nextcloud_migration_token`
+      const url = `${clouderyUrl}/api/public/instances/${workplaceFqdn}/token`
       const response = await fetch(url, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${clouderyToken}`,
+          'Content-Type': 'application/json',
         },
+        body: JSON.stringify({
+          audience: 'app',
+          scope: MIGRATION_TOKEN_SCOPE,
+        }),
       })
 
       if (!response.ok) {

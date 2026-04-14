@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { createClouderyClient } from '../src/cloudery-client.js'
+import { MIGRATION_TOKEN_SCOPE } from '../src/doctypes.js'
 import type { Logger } from 'pino'
 
 describe('ClouderyClient', () => {
@@ -28,12 +29,17 @@ describe('ClouderyClient', () => {
     const token = await client.getToken('alice.cozy.example')
 
     expect(mockFetch).toHaveBeenCalledWith(
-      'https://manager.cozycloud.cc/api/public/instances/alice.cozy.example/nextcloud_migration_token',
+      'https://manager.cozycloud.cc/api/public/instances/alice.cozy.example/token',
       {
         method: 'POST',
         headers: {
           Authorization: 'Bearer api-secret',
+          'Content-Type': 'application/json',
         },
+        body: JSON.stringify({
+          audience: 'app',
+          scope: MIGRATION_TOKEN_SCOPE,
+        }),
       }
     )
     expect(token).toBe('instance-jwt')

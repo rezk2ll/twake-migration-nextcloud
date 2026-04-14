@@ -27,7 +27,20 @@ describe('loadConfig', () => {
       clouderyToken: 'secret-token',
       logLevel: 'info',
       flushInterval: 50,
+      stackUrlScheme: 'https',
     })
+  })
+
+  it('reads STACK_URL_SCHEME when set to http (dev against a local Stack)', async () => {
+    Object.assign(process.env, { ...VALID_ENV, STACK_URL_SCHEME: 'http' })
+    const { loadConfig } = await import('../src/config.js')
+    expect(loadConfig().stackUrlScheme).toBe('http')
+  })
+
+  it('rejects STACK_URL_SCHEME values other than http or https', async () => {
+    Object.assign(process.env, { ...VALID_ENV, STACK_URL_SCHEME: 'ftp' })
+    const { loadConfig } = await import('../src/config.js')
+    expect(() => loadConfig()).toThrow('STACK_URL_SCHEME')
   })
 
   it('uses LOG_LEVEL when provided', async () => {

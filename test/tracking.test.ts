@@ -5,6 +5,7 @@ import {
   setCompleted,
   setFailed,
   flushProgress,
+  isConflictError,
 } from '../src/tracking.js'
 import type { StackClient } from '../src/stack-client.js'
 import type { TrackingDoc } from '../src/types.js'
@@ -39,6 +40,30 @@ function makeMockStack(doc?: TrackingDoc): StackClient {
     getDiskUsage: vi.fn(),
   } as unknown as StackClient
 }
+
+describe('isConflictError', () => {
+  it('detects a legacy (409) message', () => {
+    expect(isConflictError(new Error('Something (409) Conflict'))).toBe(true)
+  })
+
+  it('detects a FetchError-shaped 409 with only a status property', () => {
+    // cozy-stack-client's FetchError sets `.status` but leaves `.message`
+    // empty, so matching on message alone misses every Stack 409.
+    const err = Object.assign(new Error(''), { name: 'FetchError', status: 409 })
+    expect(isConflictError(err)).toBe(true)
+  })
+
+  it('returns false for non-Error values', () => {
+    expect(isConflictError(null)).toBe(false)
+    expect(isConflictError('409')).toBe(false)
+    expect(isConflictError({ status: 409 })).toBe(false)
+  })
+
+  it('returns false for unrelated statuses', () => {
+    const err = Object.assign(new Error(''), { status: 500 })
+    expect(isConflictError(err)).toBe(false)
+  })
+})
 
 describe('updateTracking', () => {
   it('reads, applies updater, and writes the doc', async () => {

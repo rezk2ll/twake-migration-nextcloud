@@ -1,5 +1,6 @@
 import type { Logger } from 'pino'
-import { CozyStackClient, AppToken } from 'cozy-stack-client'
+import cozyStackClientPkg from 'cozy-stack-client'
+import type { CozyStackClient as CozyStackClientType } from 'cozy-stack-client'
 import type { ClouderyClient } from './cloudery-client.js'
 import type {
   NextcloudEntry,
@@ -7,6 +8,18 @@ import type {
   DiskUsage,
   TrackingDoc,
 } from './types.js'
+import { DOCTYPES } from './doctypes.js'
+
+// cozy-stack-client is published as CommonJS with `__esModule: true`, which
+// means Node's ESM→CJS interop surfaces module.exports under the default
+// import. The class lives at `.default` on that object, and AppToken is not
+// re-exported from the package index at all. Reach through once and then use
+// CozyStackClient like a normal constructor. The constructor accepts either
+// an AppToken instance or a raw JWT string, so we pass the string directly
+// and sidestep the missing AppToken export.
+const CozyStackClient = (cozyStackClientPkg as unknown as {
+  default: new (options: { uri: string; token: string }) => CozyStackClientType
+}).default
 
 export interface StackClient {
   /** Lists files and directories in a Nextcloud path via the Stack's WebDAV proxy. */
@@ -23,12 +36,10 @@ export interface StackClient {
   updateTrackingDoc(doc: TrackingDoc): Promise<TrackingDoc>
 }
 
-const MIGRATIONS_DOCTYPE = 'io.cozy.nextcloud.migrations'
-const NC_FILES_DOCTYPE = 'io.cozy.remote.nextcloud.files'
-
 /**
  * Creates a StackClient backed by cozy-stack-client with automatic token refresh.
  * @param workplaceFqdn - FQDN of the target Cozy instance
+ * @param urlScheme - `https` in production, `http` for local dev Stacks
  * @param initialToken - JWT token obtained from the Cloudery
  * @param clouderyClient - Used to refresh the token on 401
  * @param logger - Pino logger (should carry migration context via .child())
@@ -36,19 +47,20 @@ const NC_FILES_DOCTYPE = 'io.cozy.remote.nextcloud.files'
  */
 export function createStackClient(
   workplaceFqdn: string,
+  urlScheme: 'http' | 'https',
   initialToken: string,
   clouderyClient: ClouderyClient,
   logger: Logger
 ): StackClient {
   const cozy = new CozyStackClient({
-    uri: `https://${workplaceFqdn}`,
-    token: new AppToken(initialToken),
+    uri: `${urlScheme}://${workplaceFqdn}`,
+    token: initialToken,
   })
 
-  const ncCollection = cozy.collection(NC_FILES_DOCTYPE)
-  const docCollection = cozy.collection(MIGRATIONS_DOCTYPE)
-  const settingsCollection = cozy.collection('io.cozy.settings')
-  const fileCollection = cozy.collection('io.cozy.files')
+  const ncCollection = cozy.collection(DOCTYPES.NC_FILES)
+  const docCollection = cozy.collection(DOCTYPES.MIGRATIONS)
+  const settingsCollection = cozy.collection(DOCTYPES.SETTINGS)
+  const fileCollection = cozy.collection(DOCTYPES.FILES)
 
   /**
    * Wraps a Stack operation with 401 token refresh. On 401, fetches a new
@@ -65,7 +77,7 @@ export function createStackClient(
       if (status === 401) {
         logger.warn({ event: 'stack.token_refresh' }, 'Stack returned 401, refreshing token')
         const newToken = await clouderyClient.getToken(workplaceFqdn)
-        cozy.setToken(new AppToken(newToken))
+        cozy.setToken(newToken)
         return await operation()
       }
       throw error
@@ -98,21 +110,36 @@ export function createStackClient(
     /**
      * Copies a file from Nextcloud into a Cozy directory via the Stack's
      * downstream route. Fails with 409 if the file already exists.
+     *
+     * Goes through cozy.fetchJSON rather than ncCollection.moveToCozy
+     * because the library's moveToCozy constructs its FetchError with a
+     * non-awaited `resp.json()` call, which corrupts the Response body and
+     * causes node's undici to throw "Body is unusable" on every 4xx —
+     * crashing the whole consumer process on the first file conflict.
+     * Using fetchJSON bypasses that path: the Stack client's core fetch
+     * reads the body once via getResponseData and hangs the parsed body
+     * off `error.reason`, so 409s surface as normal throwable errors the
+     * migration loop can skip.
+     *
      * @param accountId - Nextcloud account ID (io.cozy.accounts)
      * @param ncPath - Source file path on Nextcloud
      * @param cozyDirId - Target Cozy directory ID
      * @returns The created file's metadata
      */
     async transferFile(accountId: string, ncPath: string, cozyDirId: string): Promise<CozyFile> {
-      const resp = await withTokenRefresh(() =>
-        ncCollection.moveToCozy(
-          { path: ncPath, cozyMetadata: { sourceAccount: accountId } },
-          { _id: cozyDirId },
-          { copy: true, FailOnConflict: true }
+      const encodedPath = ncPath
+        .split('/')
+        .map((segment) =>
+          encodeURIComponent(segment).replace(/\(/g, '%28').replace(/\)/g, '%29'),
         )
-      )
+        .join('/')
+      const url =
+        `/remote/nextcloud/${encodeURIComponent(accountId)}/downstream${encodedPath}` +
+        `?To=${encodeURIComponent(cozyDirId)}&Copy=true&FailOnConflict=true`
 
-      const body = await resp.json() as { data: { id: string; attributes: Record<string, unknown> } }
+      const body = await withTokenRefresh(() =>
+        cozy.fetchJSON('POST', url),
+      ) as { data: { id: string; attributes: Record<string, unknown> } }
       const attrs = body.data.attributes
       return {
         id: body.data.id,
@@ -124,7 +151,8 @@ export function createStackClient(
 
     /**
      * Creates a directory in Cozy VFS. If the directory already exists (409),
-     * extracts and returns the existing directory's ID.
+     * looks up the existing directory in the parent's children and returns
+     * its ID. This supports idempotent retries of a crashed migration.
      * @param parentDirId - Parent directory ID in Cozy VFS
      * @param name - Name of the directory to create
      * @returns The created or existing directory's ID
@@ -137,16 +165,26 @@ export function createStackClient(
         return data._id as string
       } catch (error: unknown) {
         const status = (error as { status?: number }).status
-        if (status === 409) {
-          const response = (error as { response?: Response }).response
-          if (response) {
-            const body = await response.json() as { errors?: Array<{ source?: { id?: string } }> }
-            const existingId = body.errors?.[0]?.source?.id
-            if (existingId) return existingId
-          }
-          throw new Error(`Stack 409 on createDir but could not extract existing dir ID`)
+        if (status !== 409) {
+          throw error
         }
-        throw error
+        // On 409, the Stack's body does not carry the conflicting doc's id
+        // (`errors[0].source` is empty), so we query the parent to find the
+        // matching child by name. Reading `error.response.json()` would
+        // crash with "Body is unusable" because cozy-stack-client already
+        // drained it while constructing the FetchError — never go there.
+        const parent = await withTokenRefresh(() =>
+          cozy.fetchJSON('GET', `/files/${encodeURIComponent(parentDirId)}?page[limit]=1000`)
+        ) as {
+          included?: Array<{ id: string; attributes: { name: string; type: string } }>
+        }
+        const existing = parent.included?.find(
+          (child) => child.attributes.name === name && child.attributes.type === 'directory',
+        )
+        if (existing) return existing.id
+        throw new Error(
+          `Stack 409 on createDir but could not find existing directory ${name} under ${parentDirId}`,
+        )
       }
     },
 

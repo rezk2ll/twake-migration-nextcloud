@@ -5,10 +5,15 @@ const MAX_CONFLICT_RETRIES = 5
 
 /**
  * @param error - Caught error value
- * @returns true if the error is a CouchDB 409 conflict
+ * @returns true if the error represents an HTTP/CouchDB 409 conflict
  */
 export function isConflictError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('(409)')
+  if (!(error instanceof Error)) return false
+  if (error.message.includes('(409)')) return true
+  // cozy-stack-client's FetchError exposes the HTTP status directly but
+  // leaves `.message` empty, so message-matching alone misses every Stack
+  // 409. Fall through to the status field so callers catch both shapes.
+  return (error as { status?: number }).status === 409
 }
 
 /**
