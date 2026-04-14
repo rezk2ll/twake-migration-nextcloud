@@ -30,6 +30,14 @@ CLOUDERY_TOKEN="your-cloudery-api-token"
 
 ## Optional variables
 
+### `STACK_URL_SCHEME`
+
+URL scheme the consumer uses to reach the Cozy Stack, either `https` or `http`. Defaults to `https`, which is what production always wants. Set to `http` only for local development against a non-TLS Stack (for example `http://cozy.localhost:8080`). Any other value fails fast at startup.
+
+```
+STACK_URL_SCHEME="https"
+```
+
 ### `LOG_LEVEL`
 
 Controls log verbosity. Defaults to `info`.

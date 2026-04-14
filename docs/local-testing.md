@@ -1,6 +1,6 @@
 # Local end-to-end testing
 
-A step-by-step recipe for running the full migration flow on a single machine against a real Nextcloud, before the Cloudery is wired up. The unit tests in `test/` mock every network call; this guide is for the higher-confidence check that the service actually boots, consumes RabbitMQ messages, asks a Cloudery for a token, and drives the Stack through a real transfer.
+A step-by-step recipe for running the full migration flow on a single machine against a real Nextcloud, before the Cloudery is wired up. The [unit tests](development.md#testing) mock every network call; this guide is for the higher-confidence check that the service actually boots, consumes RabbitMQ messages, asks a Cloudery for a token, and drives the Stack through a real transfer. Environment variables referenced below are described in [Configuration](configuration.md).
 
 ## What you need
 
@@ -63,7 +63,7 @@ You should see `['migration']`.
 
 ## 3. Mock the Cloudery
 
-The consumer fetches its Stack token from the Cloudery, which is not available locally. A tiny Node HTTP server that returns a pre-minted Stack token on every call is enough. Save this somewhere outside the repo, for example `/tmp/cloudery-mock.js`:
+The consumer fetches its Stack token from the Cloudery, which is not available locally. A tiny Node HTTP server that returns a pre-minted Stack token on every call is enough. Unlike the real Cloudery, this mock ignores the request body (the consumer still sends the expected `audience` and `scope` fields; the real endpoint validates them). Save this somewhere outside the repo, for example `/tmp/cloudery-mock.js`:
 
 ```js
 const http = require('http')
@@ -96,20 +96,20 @@ server.listen(PORT, '127.0.0.1', () => {
 })
 ```
 
-Mint a long-lived CLI token that covers every doctype the consumer touches, and save it to a file:
+Mint a long-lived CLI token that covers every doctype the consumer touches. The same token is used for the trigger curl in step 5, so keep it in a variable or a file:
 
 ```bash
-cozy-stack instances token-cli cozy.localhost:8080 \
+export STACK_TOKEN=$(cozy-stack instances token-cli cozy.localhost:8080 \
   io.cozy.nextcloud.migrations \
   io.cozy.remote.nextcloud.files \
   io.cozy.files \
-  io.cozy.settings > /tmp/stack_token
+  io.cozy.settings)
 ```
 
-Start the mock:
+Start the mock in a new shell, passing the token through:
 
 ```bash
-STACK_TOKEN=$(cat /tmp/stack_token) node /tmp/cloudery-mock.js
+STACK_TOKEN="$STACK_TOKEN" node /tmp/cloudery-mock.js
 ```
 
 ## 4. Build and run the consumer
@@ -137,18 +137,16 @@ The consumer does not auto-load `.env`. Either pass the variables inline (as abo
 When it is up you should see:
 
 ```json
-{"event":"rabbitmq.subscribed","exchange":"migration","queue":"migration.nextcloud.commands"}
+{"event":"rabbitmq.subscribed","exchange":"migration","queue":"migration.nextcloud.commands","routing_key":"nextcloud.migration.requested"}
 ```
 
 ## 5. Trigger a migration
 
-Mint a token for the caller (the Settings UI's scope in production) and POST to the Stack. Replace the URL, login, and password with your real Nextcloud credentials:
+POST to the Stack using the same `STACK_TOKEN` from step 3. Its scope is a superset of what the trigger endpoint needs. Replace the URL, login, and password with your real Nextcloud credentials:
 
 ```bash
-TOKEN=$(cozy-stack instances token-cli cozy.localhost:8080 io.cozy.nextcloud.migrations)
-
-curl -i -X POST http://cozy.localhost:8080/remote/nextcloud/migration \
-  -H "Authorization: Bearer $TOKEN" \
+MIGRATION_ID=$(curl -s -X POST http://cozy.localhost:8080/remote/nextcloud/migration \
+  -H "Authorization: Bearer $STACK_TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/vnd.api+json" \
   -d '{
@@ -156,21 +154,23 @@ curl -i -X POST http://cozy.localhost:8080/remote/nextcloud/migration \
     "nextcloud_login": "you@example.org",
     "nextcloud_app_password": "xxxxx-xxxxx-xxxxx-xxxxx-xxxxx",
     "source_path": "/"
-  }'
+  }' | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['id'])")
+
+echo "migration: $MIGRATION_ID"
 ```
 
-On success the Stack returns `201 Created` with the tracking document id. The consumer receives the RabbitMQ message within a second, calls the mock to get a Stack token, and starts walking the Nextcloud tree.
+On success the Stack returns `201 Created` with the tracking document id (captured above). The consumer receives the RabbitMQ message within a second, calls the mock to get a Stack token, and starts walking the Nextcloud tree.
 
 ## 6. Verify
 
-Watch the consumer logs for `migration.started`, one `migration.file_transferred` per file, and a final `migration.completed`. The tracking document can also be read straight from CouchDB:
+Watch the consumer logs for `migration.started`, one `migration.file_transferred` per file, and a final `migration.completed`. The tracking document can also be read straight from CouchDB, using the `$MIGRATION_ID` captured in step 5. Replace `admin:password` with whatever admin credentials your local CouchDB was installed with; they are independent from the RabbitMQ ones:
 
 ```bash
 PFX=$(cozy-stack instances show cozy.localhost:8080 \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['attributes']['prefix'])")
 
 curl -s -u admin:password \
-  "http://localhost:5984/${PFX}%2Fio-cozy-nextcloud-migrations/<migration_id>" \
+  "http://localhost:5984/${PFX}%2Fio-cozy-nextcloud-migrations/${MIGRATION_ID}" \
   | python3 -m json.tool
 ```
 
@@ -178,7 +178,7 @@ Migrated files land under `/Nextcloud/...` in the target Cozy. You can also brow
 
 ## Known gotchas
 
-- **Stack CLI tokens do not expire** in cozy-stack's default configuration, so the mock can serve the same static token for an entire session. If you destroy and recreate the instance, re-mint the token and restart the mock.
+- **Stack CLI tokens are tied to the instance.** If you destroy and recreate `cozy.localhost:8080`, re-mint `STACK_TOKEN` and restart the mock; the previous token will be rejected by the new instance.
 - **The Stack probe failure message is generic.** If the Stack returns `401 nextcloud credentials are invalid` but you know the password is right, the Nextcloud OCS probe endpoint likely returned a non-200 for reasons other than auth. Recent stacks probe OCS Core (`/ocs/v2.php/cloud/user`), which cannot be disabled.
 - **Conflict handling is name-only.** If the target Cozy directory already contains a file with the same name as a Nextcloud file, the migration silently keeps the Cozy version, even when the bytes differ. To retry a clean migration, destroy the instance or delete the `/Nextcloud` tree in Drive before firing the next request.
 - **Stuck tracking documents.** Only one `pending` or `running` migration is allowed per instance. If the consumer crashes mid-run, mark the stuck doc as `failed` in CouchDB (edit the `status` field) before triggering again, otherwise you will get a `409 Conflict`.
