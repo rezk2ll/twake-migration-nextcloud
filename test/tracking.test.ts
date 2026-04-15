@@ -31,9 +31,17 @@ function makeDoc(overrides: Partial<TrackingDoc> = {}): TrackingDoc {
 }
 
 function makeMockStack(doc?: TrackingDoc): StackClient {
+  // Stateful fake: every updateTrackingDoc call replaces the stored doc, so
+  // subsequent getTrackingDoc calls see the result of the previous write.
+  // Tests that chain multiple tracking writes (notably the cross-flush
+  // invariants) depend on this to exercise the real read-modify-write loop.
+  let current = doc ?? makeDoc()
   return {
-    getTrackingDoc: vi.fn().mockResolvedValue(doc ?? makeDoc()),
-    updateTrackingDoc: vi.fn().mockImplementation(async (d: TrackingDoc) => d),
+    getTrackingDoc: vi.fn().mockImplementation(async () => current),
+    updateTrackingDoc: vi.fn().mockImplementation(async (d: TrackingDoc) => {
+      current = d
+      return d
+    }),
     listNextcloudDir: vi.fn(),
     transferFile: vi.fn(),
     createDir: vi.fn(),
@@ -149,7 +157,7 @@ describe('setFailed', () => {
 describe('flushProgress', () => {
   it('merges local deltas into the remote doc in a single write', async () => {
     const doc = makeDoc({
-      progress: { bytes_imported: 100, files_imported: 2, bytes_total: 0, files_total: 0 },
+      progress: { bytes_imported: 100, files_imported: 2, bytes_total: 67365343, files_total: 0 },
       errors: [{ path: '/old.txt', message: 'old error', at: '2024-01-01T00:00:00Z' }],
     })
     const stack = makeMockStack(doc)
@@ -159,18 +167,42 @@ describe('flushProgress', () => {
       filesImported: 3,
       errors: [{ path: '/new.txt', message: 'new error', at: '2024-01-02T00:00:00Z' }],
       skipped: [{ path: '/dup.txt', reason: 'already exists', size: 42 }],
-    }, { bytesTotal: 9000, filesTotal: 20 })
+    }, 20)
 
     const calledDoc = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
     // Deltas are added to existing values
     expect(calledDoc.progress.bytes_imported).toBe(600)
     expect(calledDoc.progress.files_imported).toBe(5)
-    // Totals are replaced (latest discovered values)
-    expect(calledDoc.progress.bytes_total).toBe(9000)
+    // bytes_total is preserved from setRunning (never overwritten here)
+    expect(calledDoc.progress.bytes_total).toBe(67365343)
+    // files_total tracks the live discovered count
     expect(calledDoc.progress.files_total).toBe(20)
     // Errors and skipped are appended
     expect(calledDoc.errors).toHaveLength(2)
     expect(calledDoc.skipped).toHaveLength(1)
+  })
+
+  it('never rewrites bytes_total once setRunning has seeded it', async () => {
+    // Two consecutive flushes against a stateful mock. bytes_total must
+    // survive both writes unchanged so the UI sees a stable denominator.
+    // bytes_imported must accumulate across flushes (first 100, then
+    // +500), which only works because the mock now replays the previous
+    // write on the next read.
+    const doc = makeDoc({
+      progress: { bytes_imported: 0, files_imported: 0, bytes_total: 1000000, files_total: 0 },
+    })
+    const stack = makeMockStack(doc)
+
+    await flushProgress(stack, 'mig-1', { bytesImported: 100, filesImported: 1, errors: [], skipped: [] }, 5)
+    await flushProgress(stack, 'mig-1', { bytesImported: 500, filesImported: 2, errors: [], skipped: [] }, 12)
+
+    const calls = vi.mocked(stack.updateTrackingDoc).mock.calls
+    expect(calls[0][0].progress.bytes_total).toBe(1000000)
+    expect(calls[1][0].progress.bytes_total).toBe(1000000)
+    expect(calls[0][0].progress.bytes_imported).toBe(100)
+    expect(calls[1][0].progress.bytes_imported).toBe(600)
+    expect(calls[0][0].progress.files_total).toBe(5)
+    expect(calls[1][0].progress.files_total).toBe(12)
   })
 
   it('retries on 409 with reapplied patch', async () => {
@@ -182,7 +214,7 @@ describe('flushProgress', () => {
     await flushProgress(stack, 'mig-1', {
       bytesImported: 100, filesImported: 1,
       errors: [], skipped: [],
-    }, { bytesTotal: 100, filesTotal: 1 })
+    }, 1)
 
     // Re-reads doc and reapplies patch
     expect(stack.getTrackingDoc).toHaveBeenCalledTimes(2)

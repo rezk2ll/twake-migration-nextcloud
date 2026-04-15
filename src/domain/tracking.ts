@@ -120,24 +120,32 @@ export function emptyLocalProgress(): LocalProgress {
 /**
  * Flushes locally accumulated progress to CouchDB in a single write.
  * On 409, re-reads _rev and reapplies the patch.
+ *
+ * `bytes_total` is intentionally preserved across flushes: it is seeded
+ * once by [setRunning] from the authoritative Nextcloud `oc:size` total
+ * and must stay stable so the UI can render a meaningful progress bar.
+ * `files_total` is still updated from the walk because Nextcloud does
+ * not expose a cheap recursive file count, so the frontend should treat
+ * it as a best-effort counter rather than a stable denominator.
+ *
  * @param stackClient - Stack API client
  * @param docId - Tracking document ID
  * @param local - Accumulated deltas since last flush
- * @param discovered - Latest discovered totals (bytes_total, files_total)
+ * @param filesDiscovered - Total files discovered so far during traversal
  */
 export async function flushProgress(
   stackClient: StackClient,
   docId: string,
   local: LocalProgress,
-  discovered: { bytesTotal: number; filesTotal: number }
+  filesDiscovered: number
 ): Promise<void> {
   await updateTracking(stackClient, docId, (doc) => ({
     ...doc,
     progress: {
+      ...doc.progress,
       bytes_imported: doc.progress.bytes_imported + local.bytesImported,
       files_imported: doc.progress.files_imported + local.filesImported,
-      bytes_total: discovered.bytesTotal,
-      files_total: discovered.filesTotal,
+      files_total: filesDiscovered,
     },
     errors: [...doc.errors, ...local.errors],
     skipped: [...doc.skipped, ...local.skipped],

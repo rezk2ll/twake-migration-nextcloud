@@ -78,6 +78,52 @@ describe('StackClient', () => {
     })
   })
 
+  describe('getNextcloudSize', () => {
+    it('calls the size proxy route and unwraps the byte total', async () => {
+      mockFetchJSON.mockResolvedValueOnce({ size: 67365343 })
+
+      const client = createStackClient(FQDN, 'https', TOKEN, mockCloudery, logger)
+      const size = await client.getNextcloudSize('acc-123', '/Photos')
+
+      expect(size).toBe(67365343)
+      expect(mockFetchJSON).toHaveBeenCalledWith(
+        'GET',
+        expect.stringContaining('/remote/nextcloud/acc-123/size/Photos'),
+      )
+    })
+
+    it('sends the root path as /size/ for an empty or slash input', async () => {
+      mockFetchJSON.mockResolvedValue({ size: 0 })
+      const client = createStackClient(FQDN, 'https', TOKEN, mockCloudery, logger)
+
+      await client.getNextcloudSize('acc-123', '/')
+      await client.getNextcloudSize('acc-123', '')
+
+      const urls = mockFetchJSON.mock.calls.map((call) => call[1] as string)
+      expect(urls[0]).toContain('/remote/nextcloud/acc-123/size/')
+      expect(urls[1]).toContain('/remote/nextcloud/acc-123/size/')
+    })
+
+    it('percent-encodes path segments with spaces and parens', async () => {
+      mockFetchJSON.mockResolvedValueOnce({ size: 123 })
+      const client = createStackClient(FQDN, 'https', TOKEN, mockCloudery, logger)
+
+      await client.getNextcloudSize('acc-123', '/Holiday 2024/IMG (1)')
+
+      const url = mockFetchJSON.mock.calls[0][1] as string
+      expect(url).toContain('Holiday%202024')
+      expect(url).toContain('IMG%20%281%29')
+    })
+
+    it('accepts a stringified size for forward compatibility', async () => {
+      mockFetchJSON.mockResolvedValueOnce({ size: '42' })
+      const client = createStackClient(FQDN, 'https', TOKEN, mockCloudery, logger)
+
+      const size = await client.getNextcloudSize('acc-123', '/')
+      expect(size).toBe(42)
+    })
+  })
+
   describe('transferFile', () => {
     it('calls the downstream proxy route and unwraps JSON-API', async () => {
       // transferFile goes through cozy.fetchJSON directly rather than

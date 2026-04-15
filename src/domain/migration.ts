@@ -27,7 +27,16 @@ interface MigrationContext {
   command: MigrationCommand
   stackClient: StackClient
   logger: Logger
-  /** Total discovered during traversal (cumulative, never reset). */
+  /**
+   * Totals observed during traversal, cumulative, never reset.
+   * `filesTotal` feeds the tracking document's `files_total` field via
+   * flushProgress, so it drives the UI's file counter. `bytesTotal` is
+   * log-only — `bytes_total` on the tracking document is seeded once
+   * from the pre-flight oc:size total in setRunning and intentionally
+   * not touched from here. The walker keeps this counter alongside so
+   * the `migration.*` log lines can surface walker progress separately
+   * from transfer progress for post-run diagnostics.
+   */
   discovered: { bytesTotal: number; filesTotal: number }
   /** Total transferred (cumulative, never reset). Used for logging. */
   transferred: { bytes: number; files: number }
@@ -48,7 +57,7 @@ async function flush(ctx: MigrationContext): Promise<void> {
   if (ctx.filesSinceFlush === 0 && ctx.pending.errors.length === 0 && ctx.pending.skipped.length === 0) {
     return
   }
-  await flushProgress(ctx.stackClient, ctx.command.migrationId, ctx.pending, ctx.discovered)
+  await flushProgress(ctx.stackClient, ctx.command.migrationId, ctx.pending, ctx.discovered.filesTotal)
   ctx.pending = emptyLocalProgress()
   ctx.filesSinceFlush = 0
 }
@@ -153,12 +162,17 @@ async function traverseDir(
  * @param command - Migration command from RabbitMQ
  * @param stackClient - Authenticated Stack API client
  * @param logger - Pino logger instance
+ * @param bytesTotal - Authoritative recursive byte total for the source
+ *   path (from the Stack's `/remote/nextcloud/:account/size/*path` route).
+ *   Seeded once via setRunning; see {@link flushProgress} for why it must
+ *   not be rewritten later.
  * @param flushInterval - Flush progress to CouchDB every N files (default: 50)
  */
 export async function runMigration(
   command: MigrationCommand,
   stackClient: StackClient,
   logger: Logger,
+  bytesTotal: number,
   flushInterval: number = DEFAULT_FLUSH_INTERVAL
 ): Promise<void> {
   const migrationLogger = logger.child({
@@ -184,7 +198,7 @@ export async function runMigration(
   try {
     migrationLogger.info({ event: 'migration.started' }, 'Migration started')
 
-    await setRunning(stackClient, command.migrationId, 0)
+    await setRunning(stackClient, command.migrationId, bytesTotal)
     const targetDirId = await stackClient.createDir(COZY_ROOT_DIR_ID, TARGET_DIR_NAME)
     await traverseDir(command.accountId, command.sourcePath || '/', targetDirId, ctx)
     await flush(ctx)
