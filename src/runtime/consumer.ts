@@ -6,6 +6,11 @@ import { setFailed } from '../domain/tracking.js'
 import type { MigrationCommand } from '../domain/types.js'
 import type { Config } from './config.js'
 
+// Fallback when the tracking document has no target_dir. The Stack defaults
+// this field at creation time, so an empty value only happens with legacy
+// docs written before target_dir was wired up.
+const DEFAULT_TARGET_DIR = '/Nextcloud'
+
 /**
  * Handles a single migration message: acquires a token, validates idempotency
  * and quota, then fires the migration without awaiting (early ACK pattern).
@@ -91,7 +96,7 @@ export async function handleMigrationMessage(
     stackClient,
     logger,
     sourceSize,
-    trackingDoc.target_dir,
+    trackingDoc.target_dir || DEFAULT_TARGET_DIR,
     config.flushInterval,
   ).catch((error) => {
     migrationLogger.error({

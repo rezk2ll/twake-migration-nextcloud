@@ -160,6 +160,17 @@ describe('handleMigrationMessage', () => {
     expect(runMigration).toHaveBeenCalled()
   })
 
+  it('falls back to /Nextcloud when the tracking doc has no target_dir', async () => {
+    vi.mocked(mockStack.getTrackingDoc).mockResolvedValueOnce(makePendingDoc({ target_dir: '' }))
+    vi.mocked(mockStack.getNextcloudSize).mockResolvedValueOnce(10)
+
+    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
+
+    expect(runMigration).toHaveBeenCalledWith(
+      expect.anything(), mockStack, logger, 10, '/Nextcloud', config.flushInterval,
+    )
+  })
+
   it('calls getNextcloudSize on the configured sourcePath', async () => {
     await handleMigrationMessage(makeCommand({ sourcePath: '/Photos' }), mockCloudery, logger, config)
     expect(mockStack.getNextcloudSize).toHaveBeenCalledWith('acc-123', '/Photos')
