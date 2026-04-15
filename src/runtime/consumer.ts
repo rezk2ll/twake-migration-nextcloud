@@ -1,33 +1,10 @@
 import type { Logger } from 'pino'
 import type { ClouderyClient } from '../clients/cloudery-client.js'
-import { createStackClient, type StackClient } from '../clients/stack-client.js'
+import { createStackClient } from '../clients/stack-client.js'
 import { runMigration } from '../domain/migration.js'
 import { setFailed } from '../domain/tracking.js'
 import type { MigrationCommand } from '../domain/types.js'
 import type { Config } from './config.js'
-
-/**
- * Shallow estimate of source size from root-level file listing only.
- * Used as a pre-flight quota check before starting the migration.
- * @param stackClient - Stack API client
- * @param accountId - Nextcloud account ID
- * @param path - Nextcloud directory path to list
- * @returns Total bytes of files in the listed directory (not recursive)
- */
-async function estimateSourceSize(
-  stackClient: StackClient,
-  accountId: string,
-  path: string
-): Promise<number> {
-  const entries = await stackClient.listNextcloudDir(accountId, path)
-  let total = 0
-  for (const entry of entries) {
-    if (entry.type === 'file') {
-      total += entry.size
-    }
-  }
-  return total
-}
 
 /**
  * Handles a single migration message: acquires a token, validates idempotency
@@ -71,18 +48,24 @@ export async function handleMigrationMessage(
     return
   }
 
-  const [diskUsage, sourceEstimate] = await Promise.all([
+  // Nextcloud reports the recursive byte total of the source path via
+  // its `oc:size` property, so we get an accurate pre-flight figure from
+  // one constant-time PROPFIND. The previous implementation shallow-
+  // summed the direct children of the source path and pretended that
+  // was the total, which could be off by several orders of magnitude
+  // and let quota-exceeding migrations start before failing mid-stream.
+  const [diskUsage, sourceSize] = await Promise.all([
     stackClient.getDiskUsage(),
-    estimateSourceSize(stackClient, command.accountId, command.sourcePath || '/'),
+    stackClient.getNextcloudSize(command.accountId, command.sourcePath || '/'),
   ])
 
   // quota === 0 means unlimited
   if (diskUsage.quota > 0) {
     const availableSpace = diskUsage.quota - diskUsage.used
-    if (sourceEstimate > availableSpace) {
+    if (sourceSize > availableSpace) {
       migrationLogger.warn({
         event: 'consumer.quota_exceeded',
-        source_estimate: sourceEstimate,
+        source_size: sourceSize,
         available_space: availableSpace,
         quota: diskUsage.quota,
         used: diskUsage.used,
@@ -90,7 +73,7 @@ export async function handleMigrationMessage(
       await setFailed(
         stackClient,
         command.migrationId,
-        `Insufficient quota: need ${sourceEstimate} bytes, only ${availableSpace} available`
+        `Insufficient quota: need ${sourceSize} bytes, only ${availableSpace} available`
       )
       return
     }
@@ -98,7 +81,7 @@ export async function handleMigrationMessage(
 
   migrationLogger.info({
     event: 'consumer.validation_passed',
-    source_estimate: sourceEstimate,
+    source_size: sourceSize,
     quota: diskUsage.quota,
     used: diskUsage.used,
   }, 'Validation passed, firing migration')

@@ -41,6 +41,12 @@ const CozyStackClient = (cozyStackClientPkg as unknown as {
 export interface StackClient {
   /** Lists files and directories in a Nextcloud path via the Stack's WebDAV proxy. */
   listNextcloudDir(accountId: string, path: string): Promise<NextcloudEntry[]>
+  /**
+   * Returns the recursive byte total of a Nextcloud folder (or file) as
+   * reported by Nextcloud's server-maintained `oc:size` property. Used
+   * as the pre-flight quota check source of truth.
+   */
+  getNextcloudSize(accountId: string, path: string): Promise<number>
   /** Transfers a file from Nextcloud into a Cozy directory (copy, fail on conflict). */
   transferFile(accountId: string, ncPath: string, cozyDirId: string): Promise<CozyFile>
   /** Creates a directory in Cozy VFS. Returns existing dir ID on 409. */
@@ -122,6 +128,33 @@ export function createStackClient(
         size: Number(entry.size ?? 0),
         mime: (entry.mime as string) ?? '',
       }))
+    },
+
+    /**
+     * Fetches the recursive byte total of a Nextcloud folder through the
+     * Stack's /size/*path proxy route. The Stack itself issues a Depth:0
+     * PROPFIND for the `oc:size` property on the target path, so this
+     * costs one constant-time round trip regardless of how deeply the
+     * folder is nested or how many files it contains. Pass an empty
+     * string or '/' to target the account root.
+     * @param accountId - Nextcloud account ID (io.cozy.accounts)
+     * @param path - Nextcloud directory (or file) path
+     * @returns Total bytes of the target subtree, as a JS number
+     */
+    async getNextcloudSize(accountId: string, path: string): Promise<number> {
+      const encodedPath = path
+        .split('/')
+        .map((segment) =>
+          encodeURIComponent(segment).replace(/\(/g, '%28').replace(/\)/g, '%29'),
+        )
+        .join('/')
+      const trimmed = encodedPath.startsWith('/') ? encodedPath : '/' + encodedPath
+      const url = `/remote/nextcloud/${encodeURIComponent(accountId)}/size${trimmed}`
+
+      const body = await withTokenRefresh(() =>
+        cozy.fetchJSON('GET', url),
+      ) as { size: number | string }
+      return typeof body.size === 'string' ? parseInt(body.size, 10) : body.size
     },
 
     /**

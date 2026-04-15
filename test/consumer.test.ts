@@ -73,6 +73,7 @@ describe('handleMigrationMessage', () => {
     mockStack = {
       getTrackingDoc: vi.fn().mockResolvedValue(makePendingDoc()),
       getDiskUsage: vi.fn().mockResolvedValue({ used: 1000, quota: 100000 }),
+      getNextcloudSize: vi.fn().mockResolvedValue(0),
       listNextcloudDir: vi.fn().mockResolvedValue([]),
       updateTrackingDoc: vi.fn().mockImplementation(async (doc: TrackingDoc) => doc),
       transferFile: vi.fn(),
@@ -134,10 +135,8 @@ describe('handleMigrationMessage', () => {
 
   it('marks migration as failed if quota is insufficient', async () => {
     vi.mocked(mockStack.getDiskUsage).mockResolvedValueOnce({ used: 99000, quota: 100000 })
-    // estimateSourceSize sums file sizes from listNextcloudDir
-    vi.mocked(mockStack.listNextcloudDir).mockResolvedValueOnce([
-      { type: 'file', name: 'large.zip', path: '/large.zip', size: 50000, mime: 'application/zip' },
-    ])
+    // The recursive oc:size total exceeds the free quota.
+    vi.mocked(mockStack.getNextcloudSize).mockResolvedValueOnce(50000)
 
     await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
 
@@ -149,14 +148,17 @@ describe('handleMigrationMessage', () => {
 
   it('skips quota check when quota is 0 (unlimited)', async () => {
     vi.mocked(mockStack.getDiskUsage).mockResolvedValueOnce({ used: 99000, quota: 0 })
-    // Even with large files, unlimited quota allows migration
-    vi.mocked(mockStack.listNextcloudDir).mockResolvedValueOnce([
-      { type: 'file', name: 'huge.iso', path: '/huge.iso', size: 999999, mime: 'application/octet-stream' },
-    ])
+    // Even with a huge source tree, unlimited quota allows migration.
+    vi.mocked(mockStack.getNextcloudSize).mockResolvedValueOnce(999999)
 
     await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
 
     expect(runMigration).toHaveBeenCalled()
+  })
+
+  it('calls getNextcloudSize on the configured sourcePath', async () => {
+    await handleMigrationMessage(makeCommand({ sourcePath: '/Photos' }), mockCloudery, logger, config)
+    expect(mockStack.getNextcloudSize).toHaveBeenCalledWith('acc-123', '/Photos')
   })
 
   it('throws on Cloudery failure (triggers retry/DLQ)', async () => {
