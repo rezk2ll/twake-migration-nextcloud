@@ -12,8 +12,28 @@ import {
 } from './tracking.js'
 
 const COZY_ROOT_DIR_ID = 'io.cozy.files.root-dir'
-const TARGET_DIR_NAME = 'Nextcloud'
 const DEFAULT_FLUSH_INTERVAL = 25
+
+/**
+ * Walks an absolute Cozy path and creates each segment, returning the id of
+ * the innermost directory. Segments that already exist are resolved via the
+ * Stack's 409 recovery path in createDir, so repeated migrations reuse the
+ * same tree instead of piling up "(2)" suffixes.
+ */
+async function ensureTargetDir(
+  stackClient: StackClient,
+  targetDir: string
+): Promise<string> {
+  const segments = targetDir.split('/').filter((s) => s !== '')
+  if (segments.length === 0) {
+    throw new Error(`invalid target_dir: ${targetDir}`)
+  }
+  let parentId = COZY_ROOT_DIR_ID
+  for (const name of segments) {
+    parentId = await stackClient.createDir(parentId, name)
+  }
+  return parentId
+}
 
 /**
  * @param error - Caught error value
@@ -166,6 +186,10 @@ async function traverseDir(
  *   path (from the Stack's `/remote/nextcloud/:account/size/*path` route).
  *   Seeded once via setRunning; see {@link flushProgress} for why it must
  *   not be rewritten later.
+ * @param targetDir - Absolute Cozy path the imported tree is mirrored under.
+ *   Comes from the tracking doc, which the Stack populated from the trigger
+ *   request (or the `/Nextcloud` default). Each path segment is created via
+ *   createDir, so existing intermediate directories are reused.
  * @param flushInterval - Flush progress to CouchDB every N files (default: 25)
  */
 export async function runMigration(
@@ -173,6 +197,7 @@ export async function runMigration(
   stackClient: StackClient,
   logger: Logger,
   bytesTotal: number,
+  targetDir: string,
   flushInterval: number = DEFAULT_FLUSH_INTERVAL
 ): Promise<void> {
   const migrationLogger = logger.child({
@@ -180,6 +205,7 @@ export async function runMigration(
     instance: command.workplaceFqdn,
     account_id: command.accountId,
     source_path: command.sourcePath,
+    target_dir: targetDir,
   })
   const ctx: MigrationContext = {
     command,
@@ -199,7 +225,7 @@ export async function runMigration(
     migrationLogger.info({ event: 'migration.started' }, 'Migration started')
 
     await setRunning(stackClient, command.migrationId, bytesTotal)
-    const targetDirId = await stackClient.createDir(COZY_ROOT_DIR_ID, TARGET_DIR_NAME)
+    const targetDirId = await ensureTargetDir(stackClient, targetDir)
     await traverseDir(command.accountId, command.sourcePath || '/', targetDirId, ctx)
     await flush(ctx)
     await setCompleted(stackClient, command.migrationId)
