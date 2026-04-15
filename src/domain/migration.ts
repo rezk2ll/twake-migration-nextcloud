@@ -12,8 +12,32 @@ import {
 } from './tracking.js'
 
 const COZY_ROOT_DIR_ID = 'io.cozy.files.root-dir'
-const TARGET_DIR_NAME = 'Nextcloud'
 const DEFAULT_FLUSH_INTERVAL = 25
+
+/**
+ * Walks an absolute Cozy path and creates each segment, returning the id of
+ * the innermost directory. Segments that already exist are resolved via the
+ * Stack's 409 recovery path in createDir, so repeated migrations reuse the
+ * same tree instead of piling up "(2)" suffixes.
+ * @param stackClient - Stack API client
+ * @param targetDir - Absolute path whose segments become a chain of Cozy dirs
+ * @returns The Cozy directory ID of the innermost created/reused segment
+ * @throws If `targetDir` has no usable segments (e.g. `""` or `"/"`)
+ */
+async function ensureTargetDir(
+  stackClient: StackClient,
+  targetDir: string
+): Promise<string> {
+  const segments = targetDir.split('/').filter((s) => s !== '')
+  if (segments.length === 0) {
+    throw new Error(`invalid target_dir: ${targetDir}`)
+  }
+  let parentId = COZY_ROOT_DIR_ID
+  for (const name of segments) {
+    parentId = await stackClient.createDir(parentId, name)
+  }
+  return parentId
+}
 
 /**
  * @param error - Caught error value
@@ -23,6 +47,11 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * Mutable state threaded through the traversal: clients, accumulators, and
+ * logging counters. Kept on the stack frame of {@link runMigration} so every
+ * helper sees the same totals without module-level state.
+ */
 interface MigrationContext {
   command: MigrationCommand
   stackClient: StackClient
@@ -52,6 +81,9 @@ interface MigrationContext {
 
 /**
  * Flushes pending local progress to CouchDB and resets the pending accumulators.
+ * A no-op when nothing has accumulated since the previous flush, so it is safe
+ * to call from completion/failure paths without double-writing.
+ * @param ctx - Migration context carrying the pending deltas and flush target
  */
 async function flush(ctx: MigrationContext): Promise<void> {
   if (ctx.filesSinceFlush === 0 && ctx.pending.errors.length === 0 && ctx.pending.skipped.length === 0) {
@@ -156,16 +188,26 @@ async function traverseDir(
 }
 
 /**
- * Runs the full migration: sets status to running, creates target directory,
- * lazily traverses the Nextcloud tree transferring files, and updates the
- * tracking document throughout. On failure, marks the migration as failed.
- * @param command - Migration command from RabbitMQ
+ * Runs the full migration: sets status to running, creates the target
+ * directory tree, lazily traverses the Nextcloud source transferring files,
+ * and updates the tracking document throughout.
+ *
+ * Never throws: any error (including traversal, transfer, or tracking-doc
+ * write failures) is caught, logged, and persisted on the tracking doc via
+ * {@link setFailed}. Callers can attach a `.catch` for defensive logging
+ * but do not need to propagate failures.
+ *
+ * @param command - Migration command from RabbitMQ (account, source path, ids)
  * @param stackClient - Authenticated Stack API client
- * @param logger - Pino logger instance
- * @param bytesTotal - Authoritative recursive byte total for the source
- *   path (from the Stack's `/remote/nextcloud/:account/size/*path` route).
- *   Seeded once via setRunning; see {@link flushProgress} for why it must
- *   not be rewritten later.
+ * @param logger - Pino logger; a child logger is derived with migration context
+ * @param bytesTotal - Authoritative recursive byte total for the source path
+ *   (from the Stack's `/remote/nextcloud/:account/size/*path` route). Seeded
+ *   once via setRunning; see {@link flushProgress} for why it must not be
+ *   rewritten later.
+ * @param targetDir - Absolute Cozy path the imported tree is mirrored under.
+ *   Comes from the tracking doc, which the Stack populated from the trigger
+ *   request (or the `/Nextcloud` default). Each segment is created via
+ *   createDir, so existing intermediate directories are reused.
  * @param flushInterval - Flush progress to CouchDB every N files (default: 25)
  */
 export async function runMigration(
@@ -173,6 +215,7 @@ export async function runMigration(
   stackClient: StackClient,
   logger: Logger,
   bytesTotal: number,
+  targetDir: string,
   flushInterval: number = DEFAULT_FLUSH_INTERVAL
 ): Promise<void> {
   const migrationLogger = logger.child({
@@ -180,6 +223,7 @@ export async function runMigration(
     instance: command.workplaceFqdn,
     account_id: command.accountId,
     source_path: command.sourcePath,
+    target_dir: targetDir,
   })
   const ctx: MigrationContext = {
     command,
@@ -199,7 +243,7 @@ export async function runMigration(
     migrationLogger.info({ event: 'migration.started' }, 'Migration started')
 
     await setRunning(stackClient, command.migrationId, bytesTotal)
-    const targetDirId = await stackClient.createDir(COZY_ROOT_DIR_ID, TARGET_DIR_NAME)
+    const targetDirId = await ensureTargetDir(stackClient, targetDir)
     await traverseDir(command.accountId, command.sourcePath || '/', targetDirId, ctx)
     await flush(ctx)
     await setCompleted(stackClient, command.migrationId)

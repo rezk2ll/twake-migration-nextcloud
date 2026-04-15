@@ -56,7 +56,7 @@ describe('runMigration', () => {
       listNextcloudDir: vi.fn().mockResolvedValueOnce(entries),
     })
 
-    await runMigration(makeCommand(), stack, logger, 0)
+    await runMigration(makeCommand(), stack, logger, 0, '/Nextcloud')
 
     // Creates /Nextcloud target directory
     expect(stack.createDir).toHaveBeenCalledWith('io.cozy.files.root-dir', 'Nextcloud')
@@ -84,7 +84,7 @@ describe('runMigration', () => {
         .mockResolvedValueOnce('photos-dir'),      // /Nextcloud/Photos
     })
 
-    await runMigration(makeCommand(), stack, logger, 0)
+    await runMigration(makeCommand(), stack, logger, 0, '/Nextcloud')
 
     // Creates both directories
     expect(stack.createDir).toHaveBeenCalledWith('io.cozy.files.root-dir', 'Nextcloud')
@@ -102,7 +102,7 @@ describe('runMigration', () => {
       transferFile: vi.fn().mockRejectedValueOnce(new Error('Stack request failed (409): conflict')),
     })
 
-    await runMigration(makeCommand(), stack, logger, 0)
+    await runMigration(makeCommand(), stack, logger, 0, '/Nextcloud')
 
     const statusUpdates = vi.mocked(stack.updateTrackingDoc).mock.calls
       .map((c) => (c[0] as TrackingDoc).status)
@@ -126,7 +126,7 @@ describe('runMigration', () => {
         .mockResolvedValueOnce({ id: 'f2', name: 'good.txt', dir_id: 'd', size: 200 }),
     })
 
-    await runMigration(makeCommand(), stack, logger, 0)
+    await runMigration(makeCommand(), stack, logger, 0, '/Nextcloud')
 
     // Error recorded in tracking doc
     const errorUpdates = vi.mocked(stack.updateTrackingDoc).mock.calls
@@ -149,7 +149,7 @@ describe('runMigration', () => {
         .mockRejectedValueOnce(new Error('Stack request failed (500): internal')),  // /Nextcloud/Broken fails
     })
 
-    await runMigration(makeCommand(), stack, logger, 0)
+    await runMigration(makeCommand(), stack, logger, 0, '/Nextcloud')
 
     // Migration should complete (not fail) because directory error is caught per-entry
     const statusUpdates = vi.mocked(stack.updateTrackingDoc).mock.calls
@@ -161,6 +161,24 @@ describe('runMigration', () => {
     expect(errorUpdates.length).toBeGreaterThan(0)
     // The file sibling should still be transferred
     expect(stack.transferFile).toHaveBeenCalledWith('acc-123', '/ok.txt', 'target-dir')
+  })
+
+  it('creates each segment of a nested target_dir before transferring', async () => {
+    const entries: NextcloudEntry[] = [
+      { type: 'file', name: 'photo.jpg', path: '/photo.jpg', size: 100, mime: 'image/jpeg' },
+    ]
+    const stack = makeStack({
+      listNextcloudDir: vi.fn().mockResolvedValueOnce(entries),
+      createDir: vi.fn()
+        .mockResolvedValueOnce('imports-id')
+        .mockResolvedValueOnce('from-nc-id'),
+    })
+
+    await runMigration(makeCommand(), stack, logger, 0, '/Imports/From Nextcloud')
+
+    expect(stack.createDir).toHaveBeenNthCalledWith(1, 'io.cozy.files.root-dir', 'Imports')
+    expect(stack.createDir).toHaveBeenNthCalledWith(2, 'imports-id', 'From Nextcloud')
+    expect(stack.transferFile).toHaveBeenCalledWith('acc-123', '/photo.jpg', 'from-nc-id')
   })
 
   it('seeds bytes_total on the running-state update from the passed argument', async () => {
@@ -178,7 +196,7 @@ describe('runMigration', () => {
       listNextcloudDir: vi.fn().mockResolvedValueOnce(entries),
     })
 
-    await runMigration(makeCommand(), stack, logger, 12345)
+    await runMigration(makeCommand(), stack, logger, 12345, '/Nextcloud')
 
     const runningUpdate = vi.mocked(stack.updateTrackingDoc).mock.calls
       .map((c) => c[0] as TrackingDoc)

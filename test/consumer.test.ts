@@ -49,7 +49,7 @@ function makePendingDoc(overrides: Partial<TrackingDoc> = {}): TrackingDoc {
     _id: 'mig-1',
     _rev: '1-abc',
     status: 'pending',
-    target_dir: 'io.cozy.files.root-dir',
+    target_dir: '/Nextcloud',
     progress: { files_imported: 0, files_total: 0, bytes_imported: 0, bytes_total: 0 },
     errors: [],
     skipped: [],
@@ -95,7 +95,7 @@ describe('handleMigrationMessage', () => {
     expect(mockStack.getTrackingDoc).toHaveBeenCalledWith('mig-1')
     // The pre-flight size from getNextcloudSize is forwarded to runMigration
     // so setRunning can seed bytes_total for the UI's progress bar.
-    expect(runMigration).toHaveBeenCalledWith(command, mockStack, logger, 12345, config.flushInterval)
+    expect(runMigration).toHaveBeenCalledWith(command, mockStack, logger, 12345, '/Nextcloud', config.flushInterval)
   })
 
   it('skips migration if status is completed', async () => {
@@ -158,6 +158,17 @@ describe('handleMigrationMessage', () => {
     await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
 
     expect(runMigration).toHaveBeenCalled()
+  })
+
+  it('falls back to /Nextcloud when the tracking doc has no target_dir', async () => {
+    vi.mocked(mockStack.getTrackingDoc).mockResolvedValueOnce(makePendingDoc({ target_dir: '' }))
+    vi.mocked(mockStack.getNextcloudSize).mockResolvedValueOnce(10)
+
+    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
+
+    expect(runMigration).toHaveBeenCalledWith(
+      expect.anything(), mockStack, logger, 10, '/Nextcloud', config.flushInterval,
+    )
   })
 
   it('calls getNextcloudSize on the configured sourcePath', async () => {
