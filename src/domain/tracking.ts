@@ -1,4 +1,4 @@
-import type { StackClient } from './stack-client.js'
+import type { StackClient } from '../clients/stack-client.js'
 import type { TrackingDoc, TrackingError, TrackingSkipped } from './types.js'
 
 const MAX_CONFLICT_RETRIES = 5

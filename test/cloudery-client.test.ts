@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
-import { createClouderyClient } from '../src/cloudery-client.js'
-import { MIGRATION_TOKEN_SCOPE } from '../src/doctypes.js'
+import { createClouderyClient } from '../src/clients/cloudery-client.js'
+import { MIGRATION_TOKEN_SCOPE } from '../src/domain/doctypes.js'
 import type { Logger } from 'pino'
 
 describe('ClouderyClient', () => {

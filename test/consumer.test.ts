@@ -1,22 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { handleMigrationMessage } from '../src/consumer.js'
-import type { ClouderyClient } from '../src/cloudery-client.js'
-import type { StackClient } from '../src/stack-client.js'
-import type { MigrationCommand, TrackingDoc, Config } from '../src/types.js'
+import { handleMigrationMessage } from '../src/runtime/consumer.js'
+import type { ClouderyClient } from '../src/clients/cloudery-client.js'
+import type { StackClient } from '../src/clients/stack-client.js'
+import type { MigrationCommand, TrackingDoc } from '../src/domain/types.js'
+import type { Config } from '../src/runtime/config.js'
 import type { Logger } from 'pino'
 
 // Mock the migration module so runMigration doesn't actually execute
-vi.mock('../src/migration.js', () => ({
+vi.mock('../src/domain/migration.js', () => ({
   runMigration: vi.fn().mockResolvedValue(undefined),
 }))
 
 // Mock stack-client factory
-vi.mock('../src/stack-client.js', () => ({
+vi.mock('../src/clients/stack-client.js', () => ({
   createStackClient: vi.fn(),
 }))
 
-import { runMigration } from '../src/migration.js'
-import { createStackClient } from '../src/stack-client.js'
+import { runMigration } from '../src/domain/migration.js'
+import { createStackClient } from '../src/clients/stack-client.js'
 
 const logger = {
   info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),

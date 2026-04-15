@@ -6,9 +6,9 @@ import {
   setFailed,
   flushProgress,
   isConflictError,
-} from '../src/tracking.js'
-import type { StackClient } from '../src/stack-client.js'
-import type { TrackingDoc } from '../src/types.js'
+} from '../src/domain/tracking.js'
+import type { StackClient } from '../src/clients/stack-client.js'
+import type { TrackingDoc } from '../src/domain/types.js'
 
 function makeDoc(overrides: Partial<TrackingDoc> = {}): TrackingDoc {
   return {

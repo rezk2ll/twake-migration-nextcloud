@@ -1,9 +1,10 @@
 import type { Logger } from 'pino'
-import type { ClouderyClient } from './cloudery-client.js'
-import { createStackClient, type StackClient } from './stack-client.js'
-import { runMigration } from './migration.js'
-import { setFailed } from './tracking.js'
-import type { MigrationCommand, Config } from './types.js'
+import type { ClouderyClient } from '../clients/cloudery-client.js'
+import { createStackClient, type StackClient } from '../clients/stack-client.js'
+import { runMigration } from '../domain/migration.js'
+import { setFailed } from '../domain/tracking.js'
+import type { MigrationCommand } from '../domain/types.js'
+import type { Config } from './config.js'
 
 /**
  * Shallow estimate of source size from root-level file listing only.

@@ -1,9 +1,9 @@
 import pino from 'pino'
 import { RabbitMQClient, type RabbitMQMessage } from '@linagora/rabbitmq-client'
-import { loadConfig } from './config.js'
-import { createClouderyClient } from './cloudery-client.js'
-import { handleMigrationMessage } from './consumer.js'
-import { parseMigrationCommand } from './types.js'
+import { loadConfig } from './runtime/config.js'
+import { createClouderyClient } from './clients/cloudery-client.js'
+import { handleMigrationMessage } from './runtime/consumer.js'
+import { parseMigrationCommand } from './domain/types.js'
 
 const EXCHANGE = 'migration'
 const ROUTING_KEY = 'nextcloud.migration.requested'

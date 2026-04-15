@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { createStackClient } from '../src/stack-client.js'
-import type { ClouderyClient } from '../src/cloudery-client.js'
-import type { TrackingDoc } from '../src/types.js'
+import { createStackClient } from '../src/clients/stack-client.js'
+import type { ClouderyClient } from '../src/clients/cloudery-client.js'
+import type { TrackingDoc } from '../src/domain/types.js'
 import type { Logger } from 'pino'
 
 // Mock cozy-stack-client

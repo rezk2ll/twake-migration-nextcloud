@@ -1,5 +1,5 @@
 import type { Logger } from 'pino'
-import { MIGRATION_TOKEN_SCOPE } from './doctypes.js'
+import { MIGRATION_TOKEN_SCOPE } from '../domain/doctypes.js'
 
 export interface ClouderyClient {
   getToken(workplaceFqdn: string): Promise<string>

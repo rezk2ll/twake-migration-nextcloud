@@ -2,13 +2,30 @@ import type { Logger } from 'pino'
 import cozyStackClientPkg from 'cozy-stack-client'
 import type { CozyStackClient as CozyStackClientType } from 'cozy-stack-client'
 import type { ClouderyClient } from './cloudery-client.js'
-import type {
-  NextcloudEntry,
-  CozyFile,
-  DiskUsage,
-  TrackingDoc,
-} from './types.js'
-import { DOCTYPES } from './doctypes.js'
+import type { TrackingDoc } from '../domain/types.js'
+import { DOCTYPES } from '../domain/doctypes.js'
+
+export interface NextcloudEntry {
+  type: 'file' | 'directory'
+  name: string
+  path: string
+  size: number
+  mime: string
+}
+
+/** Unwrapped from the Stack's JSON-API response. Size is parsed from string. */
+export interface CozyFile {
+  id: string
+  name: string
+  dir_id: string
+  size: number
+}
+
+export interface DiskUsage {
+  used: number
+  /** 0 means unlimited in Cozy Stack. */
+  quota: number
+}
 
 // cozy-stack-client is published as CommonJS with `__esModule: true`, which
 // means Node's ESM→CJS interop surfaces module.exports under the default

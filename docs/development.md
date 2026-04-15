@@ -25,19 +25,29 @@ cp .env.example .env
 
 ## Project structure
 
+The `src/` tree is grouped by role so each folder has a single reason to exist.
+
 ```
 src/
-  index.ts            Entry point — connects RabbitMQ, subscribes, handles shutdown
-  consumer.ts         Message handler — validation, idempotency, quota check, early ACK
-  migration.ts        Core logic — lazy directory traversal, file transfers, progress tracking
-  stack-client.ts     HTTP client for the Cozy Stack API (token refresh on 401)
-  cloudery-client.ts  HTTP client for the Cloudery token endpoint
-  tracking.ts         Tracking document helpers with CouchDB 409 conflict retry
-  config.ts           Environment variable parsing
-  types.ts            Type definitions and message validation
+  index.ts                  Entry point — connects RabbitMQ, subscribes, handles shutdown
+
+  clients/                  External integrations. Everything that talks to something outside the process.
+    stack-client.ts         Cozy Stack API (token refresh on 401)
+    cloudery-client.ts      Cloudery token endpoint
+    cozy-stack-client.d.ts  Type shim for the cozy-stack-client library
+
+  domain/                   What a migration is. No HTTP, no config, no process plumbing.
+    migration.ts            Core logic — lazy directory traversal, file transfers, progress tracking
+    tracking.ts             Tracking document helpers with CouchDB 409 conflict retry
+    doctypes.ts             Cozy doctype identifiers used across the codebase
+    types.ts                Migration command + tracking document schema
+
+  runtime/                  Process wiring. How domain + clients get started and fed.
+    consumer.ts             Message handler — validation, idempotency, quota check, early ACK
+    config.ts               Environment variable parsing + Config type
 
 test/
-  *.test.ts           Unit tests for each module (mocked HTTP, no real services needed)
+  *.test.ts                 Unit tests for each module (mocked HTTP, no real services needed)
 ```
 
 ## Testing

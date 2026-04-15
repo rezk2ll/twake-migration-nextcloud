@@ -38,28 +38,6 @@ export interface TrackingSkipped {
   size: number
 }
 
-export interface NextcloudEntry {
-  type: 'file' | 'directory'
-  name: string
-  path: string
-  size: number
-  mime: string
-}
-
-/** Unwrapped from the Stack's JSON-API response. Size is parsed from string. */
-export interface CozyFile {
-  id: string
-  name: string
-  dir_id: string
-  size: number
-}
-
-export interface DiskUsage {
-  used: number
-  /** 0 means unlimited in Cozy Stack. */
-  quota: number
-}
-
 /**
  * Validates and extracts a MigrationCommand from a raw RabbitMQ message.
  * @param msg - Raw message payload from RabbitMQ
@@ -84,16 +62,4 @@ export function parseMigrationCommand(msg: Record<string, unknown>): MigrationCo
     sourcePath: typeof sourcePath === 'string' ? sourcePath : '/',
     timestamp: typeof timestamp === 'number' ? timestamp : Date.now(),
   }
-}
-
-export interface Config {
-  rabbitmqUrl: string
-  clouderyUrl: string
-  clouderyToken: string
-  logLevel: string
-  flushInterval: number
-  /** URL scheme used when addressing the target Cozy Stack. Defaults to
-   * `https`; set `STACK_URL_SCHEME=http` for local development against a
-   * non-TLS Stack. */
-  stackUrlScheme: 'http' | 'https'
 }

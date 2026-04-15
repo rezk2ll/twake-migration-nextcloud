@@ -1,5 +1,5 @@
 import type { Logger } from 'pino'
-import type { StackClient } from './stack-client.js'
+import type { StackClient } from '../clients/stack-client.js'
 import type { MigrationCommand } from './types.js'
 import {
   setRunning,

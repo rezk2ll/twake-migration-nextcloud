@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { runMigration } from '../src/migration.js'
-import type { StackClient } from '../src/stack-client.js'
-import type { MigrationCommand, TrackingDoc, NextcloudEntry } from '../src/types.js'
+import { runMigration } from '../src/domain/migration.js'
+import type { StackClient, NextcloudEntry } from '../src/clients/stack-client.js'
+import type { MigrationCommand, TrackingDoc } from '../src/domain/types.js'
 import type { Logger } from 'pino'
 
 function makeStack(overrides: Partial<StackClient> = {}): StackClient {
