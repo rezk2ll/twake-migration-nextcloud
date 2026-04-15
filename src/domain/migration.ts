@@ -27,7 +27,16 @@ interface MigrationContext {
   command: MigrationCommand
   stackClient: StackClient
   logger: Logger
-  /** Total discovered during traversal (cumulative, never reset). */
+  /**
+   * Totals observed during traversal, cumulative, never reset.
+   * `filesTotal` feeds the tracking document's `files_total` field via
+   * flushProgress, so it drives the UI's file counter. `bytesTotal` is
+   * log-only — `bytes_total` on the tracking document is seeded once
+   * from the pre-flight oc:size total in setRunning and intentionally
+   * not touched from here. The walker keeps this counter alongside so
+   * the `migration.*` log lines can surface walker progress separately
+   * from transfer progress for post-run diagnostics.
+   */
   discovered: { bytesTotal: number; filesTotal: number }
   /** Total transferred (cumulative, never reset). Used for logging. */
   transferred: { bytes: number; files: number }
@@ -154,10 +163,9 @@ async function traverseDir(
  * @param stackClient - Authenticated Stack API client
  * @param logger - Pino logger instance
  * @param bytesTotal - Authoritative recursive byte total for the source
- *   path, obtained from the Stack's `/remote/nextcloud/:account/size/*path`
- *   endpoint. Written once to the tracking document at the start of the
- *   migration so a frontend can render a stable progress bar from
- *   `bytes_imported / bytes_total`.
+ *   path (from the Stack's `/remote/nextcloud/:account/size/*path` route).
+ *   Seeded once via setRunning; see {@link flushProgress} for why it must
+ *   not be rewritten later.
  * @param flushInterval - Flush progress to CouchDB every N files (default: 50)
  */
 export async function runMigration(

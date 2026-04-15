@@ -31,9 +31,17 @@ function makeDoc(overrides: Partial<TrackingDoc> = {}): TrackingDoc {
 }
 
 function makeMockStack(doc?: TrackingDoc): StackClient {
+  // Stateful fake: every updateTrackingDoc call replaces the stored doc, so
+  // subsequent getTrackingDoc calls see the result of the previous write.
+  // Tests that chain multiple tracking writes (notably the cross-flush
+  // invariants) depend on this to exercise the real read-modify-write loop.
+  let current = doc ?? makeDoc()
   return {
-    getTrackingDoc: vi.fn().mockResolvedValue(doc ?? makeDoc()),
-    updateTrackingDoc: vi.fn().mockImplementation(async (d: TrackingDoc) => d),
+    getTrackingDoc: vi.fn().mockImplementation(async () => current),
+    updateTrackingDoc: vi.fn().mockImplementation(async (d: TrackingDoc) => {
+      current = d
+      return d
+    }),
     listNextcloudDir: vi.fn(),
     transferFile: vi.fn(),
     createDir: vi.fn(),
@@ -175,9 +183,11 @@ describe('flushProgress', () => {
   })
 
   it('never rewrites bytes_total once setRunning has seeded it', async () => {
-    // Two consecutive flushes with different "files discovered so far"
-    // must leave bytes_total alone, so the UI sees a stable denominator
-    // between the migration start and completion.
+    // Two consecutive flushes against a stateful mock. bytes_total must
+    // survive both writes unchanged so the UI sees a stable denominator.
+    // bytes_imported must accumulate across flushes (first 100, then
+    // +500), which only works because the mock now replays the previous
+    // write on the next read.
     const doc = makeDoc({
       progress: { bytes_imported: 0, files_imported: 0, bytes_total: 1000000, files_total: 0 },
     })
@@ -189,6 +199,8 @@ describe('flushProgress', () => {
     const calls = vi.mocked(stack.updateTrackingDoc).mock.calls
     expect(calls[0][0].progress.bytes_total).toBe(1000000)
     expect(calls[1][0].progress.bytes_total).toBe(1000000)
+    expect(calls[0][0].progress.bytes_imported).toBe(100)
+    expect(calls[1][0].progress.bytes_imported).toBe(600)
     expect(calls[0][0].progress.files_total).toBe(5)
     expect(calls[1][0].progress.files_total).toBe(12)
   })
