@@ -1,5 +1,6 @@
 import type { Logger } from 'pino'
 import { MIGRATION_TOKEN_SCOPE } from '../domain/doctypes.js'
+import { clouderyTokenRequests } from '../runtime/metrics.js'
 
 export interface ClouderyClient {
   /** Returns a Stack token for the given instance, using the cache when fresh. */
@@ -127,7 +128,9 @@ export function createClouderyClient(
     let lastError: unknown
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       try {
-        return await fetchOnce(workplaceFqdn)
+        const token = await fetchOnce(workplaceFqdn)
+        clouderyTokenRequests.inc({ outcome: 'success' })
+        return token
       } catch (error) {
         lastError = error
         if (!isRetryable(error) || attempt === MAX_ATTEMPTS - 1) break
@@ -143,6 +146,7 @@ export function createClouderyClient(
         await new Promise<void>((resolve) => setTimeout(resolve, delay))
       }
     }
+    clouderyTokenRequests.inc({ outcome: 'failed' })
     logger.error({
       event: 'cloudery.token_failed',
       instance: workplaceFqdn,

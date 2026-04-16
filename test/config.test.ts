@@ -29,7 +29,20 @@ describe('loadConfig', () => {
       flushInterval: 25,
       stackUrlScheme: 'https',
       maxConcurrentMigrations: 10,
+      httpPort: 8080,
     })
+  })
+
+  it('reads HTTP_PORT when set', async () => {
+    Object.assign(process.env, { ...VALID_ENV, HTTP_PORT: '9090' })
+    const { loadConfig } = await import('../src/runtime/config.js')
+    expect(loadConfig().httpPort).toBe(9090)
+  })
+
+  it('rejects invalid HTTP_PORT', async () => {
+    Object.assign(process.env, { ...VALID_ENV, HTTP_PORT: '70000' })
+    const { loadConfig } = await import('../src/runtime/config.js')
+    expect(() => loadConfig()).toThrow('HTTP_PORT')
   })
 
   it('reads MAX_CONCURRENT_MIGRATIONS when set', async () => {

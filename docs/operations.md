@@ -2,15 +2,41 @@
 
 Runbook for operating the service in production. Covers how to tell when something is wrong, what the service does automatically, and when a human needs to step in.
 
-## Health signal
+## Health and metrics
 
-The service has no HTTP health endpoint. What you can observe externally:
+The service exposes a small HTTP server on `HTTP_PORT` (default `8080`) with three endpoints:
+
+| Path | Purpose |
+|---|---|
+| `/healthz` | Liveness probe. Always returns 200 while the process is alive. Deliberately cheap — a stuck event loop can still return 200, which is the point of separating it from readiness. |
+| `/readyz` | Readiness probe. Returns 200 only when RabbitMQ is connected and the process is not shutting down. Flips to 503 as soon as SIGTERM is received so load balancers and `PodDisruptionBudget` logic stop routing to the pod before the drain begins. |
+| `/metrics` | Prometheus text exposition. Scrape interval of 15–30 s is plenty; the metrics below are counters and gauges, not high-cardinality. |
+
+In Kubernetes, point `livenessProbe` at `/healthz` and `readinessProbe` at `/readyz`. The default Helm chart values do this for you.
+
+### Metrics worth alerting on
+
+| Metric | Type | What it tells you |
+|---|---|---|
+| `nextcloud_migration_active` | gauge | How many migrations are in-flight right now. Sustained at the concurrency cap means you're queue-bound. |
+| `nextcloud_migration_started_total` | counter | Migration arrival rate. Alert on a drop to zero while the RabbitMQ queue has items — indicates the consumer has stopped picking work up. |
+| `nextcloud_migration_finished_total{outcome}` | counter | `outcome="completed"` vs `outcome="failed"`. Alert on a sustained failure ratio above your tolerance (e.g. > 10%). |
+| `nextcloud_migration_files_total{outcome}` | counter | Per-file outcomes (`transferred`, `skipped`, `failed`). `skipped` is normal during resumes; `failed` is not. |
+| `nextcloud_migration_file_transfer_duration_seconds` | histogram | Per-file transfer latency. A shift in the upper buckets is an early signal of Stack or Nextcloud slowdown. |
+| `nextcloud_migration_cloudery_token_total{outcome}` | counter | `outcome="success"` vs `"failed"`. A spike in failed tokens points at Cloudery, not at this service. |
+| `nextcloud_migration_rabbitmq_connected` | gauge | `1` when connected, `0` otherwise. Complements the `/readyz` probe for dashboards. |
+
+Default Node.js runtime metrics (event loop lag, heap, GC) are included automatically by `prom-client`.
+
+## Log-based signals
+
+Even with metrics, the event log remains the source of truth for per-migration diagnosis:
 
 - **Process uptime.** Log lines with `event: service.starting`, `service.shutting_down`, `service.stopped` delimit lifetimes.
-- **RabbitMQ connection.** An `event: rabbitmq.connected` on startup means the broker is reachable. Silent thereafter; connection drops surface as errors from the underlying library.
-- **Consumption rate.** Count `event: consumer.message_received` over time. A healthy instance emits one per incoming migration request.
+- **RabbitMQ connection.** An `event: rabbitmq.connected` on startup means the broker is reachable.
+- **Consumption rate.** Count `event: consumer.message_received` over time.
 
-If the process is alive and RabbitMQ is drained but the queue keeps growing, look at the concurrency cap next.
+If the process is alive, `/readyz` is green, but the queue keeps growing, look at the concurrency cap next.
 
 ## Events worth alerting on
 
@@ -74,8 +100,10 @@ See [Configuration](configuration.md) for the full list.
 
 On `SIGTERM` or `SIGINT`:
 
-1. RabbitMQ subscription closes immediately — no new messages are accepted.
-2. The process waits up to 60 seconds for in-flight migrations to finish naturally.
-3. If the deadline passes, the process exits anyway. Anything still running becomes a stale-running zombie and is reclaimed by the next consumer.
+1. `/readyz` flips to 503 immediately so load balancers stop routing to the pod.
+2. RabbitMQ subscription closes — no new messages are accepted.
+3. The process waits up to 60 seconds for in-flight migrations to finish naturally.
+4. The ops HTTP server closes.
+5. If the drain deadline passed, the process exits anyway. Anything still running becomes a stale-running zombie and is reclaimed by the next consumer.
 
 This matters for rolling deployments: if you expect migrations to routinely run longer than 60 seconds (most do), you'll see `service.stopped` with `drained: false` on every rollout. That's not a regression — it's the heartbeat recovery doing its job.

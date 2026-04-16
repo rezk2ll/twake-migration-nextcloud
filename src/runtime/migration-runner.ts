@@ -1,4 +1,5 @@
 import type { Logger } from 'pino'
+import { activeMigrations } from './metrics.js'
 
 /**
  * Bounds the number of concurrent migrations and tracks in-flight work
@@ -44,11 +45,13 @@ export function createMigrationRunner(
   function acquire(): Promise<void> {
     if (active < maxConcurrent) {
       active += 1
+      activeMigrations.set(active)
       return Promise.resolve()
     }
     return new Promise<void>((resolve) => {
       waiters.push(() => {
         active += 1
+        activeMigrations.set(active)
         resolve()
       })
     })
@@ -56,6 +59,7 @@ export function createMigrationRunner(
 
   function release(): void {
     active -= 1
+    activeMigrations.set(active)
     const next = waiters.shift()
     if (next) next()
   }

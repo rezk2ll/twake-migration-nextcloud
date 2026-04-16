@@ -3,6 +3,12 @@ import type { CozyDir, StackClient } from '../clients/stack-client.js'
 import type { MigrationCommand } from './types.js'
 import { getErrorMessage } from './errors.js'
 import {
+  fileTransferDuration,
+  filesProcessed,
+  migrationsFinished,
+  migrationsStarted,
+} from '../runtime/metrics.js'
+import {
   setRunning,
   flushProgress,
   flushAndComplete,
@@ -150,6 +156,9 @@ async function handleFileEntry(
   try {
     const fileStart = Date.now()
     const file = await ctx.stackClient.transferFile(accountId, entry.path, cozyDirId)
+    const durationMs = Date.now() - fileStart
+    fileTransferDuration.observe(durationMs / 1000)
+    filesProcessed.inc({ outcome: 'transferred' })
     ctx.transferred.bytes += file.size
     ctx.transferred.files += 1
     ctx.pending.bytesImported += file.size
@@ -160,7 +169,7 @@ async function handleFileEntry(
       event: 'migration.file_transferred',
       nc_path: entry.path,
       size: file.size,
-      duration_ms: Date.now() - fileStart,
+      duration_ms: durationMs,
       transferred_bytes: ctx.transferred.bytes,
       transferred_files: ctx.transferred.files,
       discovered_bytes: ctx.discovered.bytesTotal,
@@ -175,6 +184,7 @@ async function handleFileEntry(
     }
   } catch (error) {
     if (isConflictError(error)) {
+      filesProcessed.inc({ outcome: 'skipped' })
       ctx.totalSkipped += 1
       ctx.logger.info({
         event: 'migration.file_skipped',
@@ -187,6 +197,7 @@ async function handleFileEntry(
       ctx.pending.skipped.push({ path: entry.path, reason: 'already exists', size: entry.size })
       return
     }
+    filesProcessed.inc({ outcome: 'failed' })
     ctx.totalErrors += 1
     const message = getErrorMessage(error)
     ctx.logger.error({
@@ -253,6 +264,7 @@ export async function runMigration(
     startedAt: Date.now(),
   }
 
+  migrationsStarted.inc()
   try {
     migrationLogger.info({ event: 'migration.started' }, 'Migration started')
 
@@ -267,6 +279,7 @@ export async function runMigration(
       ctx.discovered.filesTotal,
     )
 
+    migrationsFinished.inc({ outcome: 'completed' })
     migrationLogger.info({
       event: 'migration.completed',
       duration_ms: Date.now() - ctx.startedAt,
@@ -279,6 +292,7 @@ export async function runMigration(
     }, 'Migration completed')
   } catch (error) {
     const message = getErrorMessage(error)
+    migrationsFinished.inc({ outcome: 'failed' })
     migrationLogger.error({
       event: 'migration.failed',
       duration_ms: Date.now() - ctx.startedAt,

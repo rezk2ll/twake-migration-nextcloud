@@ -64,6 +64,14 @@ Lower values give the Settings UI more frequent progress updates at the cost of 
 FLUSH_INTERVAL="50"
 ```
 
+### `HTTP_PORT`
+
+TCP port the ops HTTP server binds on. Defaults to `8080`. The server exposes `/healthz`, `/readyz`, and `/metrics` — see [Operations](operations.md#health-and-metrics) for what each returns.
+
+```
+HTTP_PORT="8080"
+```
+
 ### `MAX_CONCURRENT_MIGRATIONS`
 
 Hard cap on the number of migrations the consumer will run at the same time. Defaults to `10`, matching the RabbitMQ prefetch.

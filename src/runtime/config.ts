@@ -11,6 +11,8 @@ export interface Config {
   /** Maximum number of migrations allowed to run concurrently. Defaults
    * to 10 to match the RabbitMQ prefetch. */
   maxConcurrentMigrations: number
+  /** TCP port the ops HTTP server (probes + /metrics) binds on. */
+  httpPort: number
 }
 
 function requireEnv(name: string): string {
@@ -39,6 +41,12 @@ export function loadConfig(): Config {
       `MAX_CONCURRENT_MIGRATIONS must be a positive integer, got: ${process.env.MAX_CONCURRENT_MIGRATIONS}`,
     )
   }
+  const httpPort = parseInt(process.env.HTTP_PORT ?? '8080', 10)
+  if (!Number.isFinite(httpPort) || httpPort < 1 || httpPort > 65535) {
+    throw new Error(
+      `HTTP_PORT must be a TCP port (1-65535), got: ${process.env.HTTP_PORT}`,
+    )
+  }
   return {
     rabbitmqUrl: requireEnv('RABBITMQ_URL'),
     clouderyUrl: requireEnv('CLOUDERY_URL'),
@@ -47,5 +55,6 @@ export function loadConfig(): Config {
     flushInterval: parseInt(process.env.FLUSH_INTERVAL ?? '25', 10),
     stackUrlScheme: rawScheme,
     maxConcurrentMigrations: maxConcurrent,
+    httpPort,
   }
 }

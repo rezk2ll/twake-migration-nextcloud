@@ -47,6 +47,8 @@ src/
   runtime/                  Process wiring. How domain + clients get started and fed.
     consumer.ts             Message handler — validation, idempotency, quota check, early ACK
     migration-runner.ts     Concurrency cap + in-flight tracking for graceful shutdown
+    http-server.ts          Ops HTTP server — /healthz, /readyz, /metrics
+    metrics.ts              Prometheus registry + metric definitions
     config.ts               Environment variable parsing + Config type
 
 test/
