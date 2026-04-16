@@ -28,7 +28,20 @@ describe('loadConfig', () => {
       logLevel: 'info',
       flushInterval: 25,
       stackUrlScheme: 'https',
+      maxConcurrentMigrations: 10,
     })
+  })
+
+  it('reads MAX_CONCURRENT_MIGRATIONS when set', async () => {
+    Object.assign(process.env, { ...VALID_ENV, MAX_CONCURRENT_MIGRATIONS: '3' })
+    const { loadConfig } = await import('../src/runtime/config.js')
+    expect(loadConfig().maxConcurrentMigrations).toBe(3)
+  })
+
+  it('rejects invalid MAX_CONCURRENT_MIGRATIONS', async () => {
+    Object.assign(process.env, { ...VALID_ENV, MAX_CONCURRENT_MIGRATIONS: '0' })
+    const { loadConfig } = await import('../src/runtime/config.js')
+    expect(() => loadConfig()).toThrow('MAX_CONCURRENT_MIGRATIONS')
   })
 
   it('reads STACK_URL_SCHEME when set to http (dev against a local Stack)', async () => {

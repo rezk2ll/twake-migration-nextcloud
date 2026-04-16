@@ -6,6 +6,7 @@ import { getErrorMessage } from '../domain/errors.js'
 import { isStaleRunning, setFailed } from '../domain/tracking.js'
 import type { MigrationCommand } from '../domain/types.js'
 import type { Config } from './config.js'
+import type { MigrationRunner } from './migration-runner.js'
 
 // Fallback when the tracking document has no target_dir. The Stack defaults
 // this field at creation time, so an empty value only happens with legacy
@@ -40,7 +41,8 @@ export async function handleMigrationMessage(
   command: MigrationCommand,
   clouderyClient: ClouderyClient,
   logger: Logger,
-  config: Config
+  config: Config,
+  runner: MigrationRunner,
 ): Promise<void> {
   const migrationLogger = logger.child({
     migration_id: command.migrationId,
@@ -141,19 +143,25 @@ export async function handleMigrationMessage(
     used: diskUsage.used,
   }, 'Validation passed, firing migration')
 
-  runMigration(
-    command,
-    stackClient,
-    logger,
-    sourceSize,
-    trackingDoc.target_dir || DEFAULT_TARGET_DIR,
-    config.flushInterval,
-  ).catch((error) => {
-    migrationLogger.error({
-      event: 'consumer.migration_unhandled_error',
-      error,
-    }, 'Migration failed after ACK')
-  })
+  // Hand off to the runner: blocks for a concurrency slot, then fires
+  // the migration in the background. The handler returns as soon as
+  // the task is launched, which is also when the RabbitMQ library
+  // ACKs — the slot stays held until runMigration settles.
+  await runner.run(() =>
+    runMigration(
+      command,
+      stackClient,
+      logger,
+      sourceSize,
+      trackingDoc.target_dir || DEFAULT_TARGET_DIR,
+      config.flushInterval,
+    ).catch((error) => {
+      migrationLogger.error({
+        event: 'consumer.migration_unhandled_error',
+        error,
+      }, 'Migration failed after ACK')
+    }),
+  )
 }
 
 /**

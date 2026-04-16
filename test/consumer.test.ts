@@ -4,7 +4,16 @@ import type { ClouderyClient } from '../src/clients/cloudery-client.js'
 import type { StackClient } from '../src/clients/stack-client.js'
 import type { MigrationCommand, TrackingDoc } from '../src/domain/types.js'
 import type { Config } from '../src/runtime/config.js'
+import type { MigrationRunner } from '../src/runtime/migration-runner.js'
 import type { Logger } from 'pino'
+
+/** Pass-through runner for tests: invokes the task synchronously so
+ *  assertions can run afterwards. Production runs tasks in the background. */
+const passThroughRunner: MigrationRunner = {
+  async run(task) { await task() },
+  async drain() { return true },
+  get active() { return 0 },
+}
 
 // Mock the migration module so runMigration doesn't actually execute
 vi.mock('../src/domain/migration.js', () => ({
@@ -89,7 +98,7 @@ describe('handleMigrationMessage', () => {
     // Small enough to pass the quota check (used 1000 + 12345 < quota 100000).
     vi.mocked(mockStack.getNextcloudSize).mockResolvedValueOnce(12345)
 
-    await handleMigrationMessage(command, mockCloudery, logger, config)
+    await handleMigrationMessage(command, mockCloudery, logger, config, passThroughRunner)
 
     expect(mockCloudery.getToken).toHaveBeenCalledWith('alice.cozy.example')
     expect(createStackClient).toHaveBeenCalledWith('alice.cozy.example', 'https', 'jwt-token', mockCloudery, expect.anything())
@@ -107,7 +116,7 @@ describe('handleMigrationMessage', () => {
       finished_at: '2024-01-01T00:01:00.000Z',
     }))
 
-    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
+    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config, passThroughRunner)
 
     expect(runMigration).not.toHaveBeenCalled()
   })
@@ -120,7 +129,7 @@ describe('handleMigrationMessage', () => {
       last_heartbeat_at: new Date().toISOString(),
     }))
 
-    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
+    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config, passThroughRunner)
 
     expect(runMigration).not.toHaveBeenCalled()
   })
@@ -137,7 +146,7 @@ describe('handleMigrationMessage', () => {
       last_heartbeat_at: old,
     }))
 
-    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
+    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config, passThroughRunner)
 
     expect(runMigration).toHaveBeenCalled()
   })
@@ -151,7 +160,7 @@ describe('handleMigrationMessage', () => {
       finished_at: '2024-01-01T00:01:00.000Z',
     }))
 
-    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
+    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config, passThroughRunner)
 
     expect(runMigration).toHaveBeenCalled()
   })
@@ -161,7 +170,7 @@ describe('handleMigrationMessage', () => {
     // The recursive oc:size total exceeds the free quota.
     vi.mocked(mockStack.getNextcloudSize).mockResolvedValueOnce(50000)
 
-    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
+    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config, passThroughRunner)
 
     expect(runMigration).not.toHaveBeenCalled()
     const failedUpdate = vi.mocked(mockStack.updateTrackingDoc).mock.calls
@@ -174,7 +183,7 @@ describe('handleMigrationMessage', () => {
     // Even with a huge source tree, unlimited quota allows migration.
     vi.mocked(mockStack.getNextcloudSize).mockResolvedValueOnce(999999)
 
-    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
+    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config, passThroughRunner)
 
     expect(runMigration).toHaveBeenCalled()
   })
@@ -183,7 +192,7 @@ describe('handleMigrationMessage', () => {
     vi.mocked(mockStack.getTrackingDoc).mockResolvedValueOnce(makePendingDoc({ target_dir: '' }))
     vi.mocked(mockStack.getNextcloudSize).mockResolvedValueOnce(10)
 
-    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
+    await handleMigrationMessage(makeCommand(), mockCloudery, logger, config, passThroughRunner)
 
     expect(runMigration).toHaveBeenCalledWith(
       expect.anything(), mockStack, logger, 10, '/Nextcloud', config.flushInterval,
@@ -191,7 +200,7 @@ describe('handleMigrationMessage', () => {
   })
 
   it('calls getNextcloudSize on the configured sourcePath', async () => {
-    await handleMigrationMessage(makeCommand({ sourcePath: '/Photos' }), mockCloudery, logger, config)
+    await handleMigrationMessage(makeCommand({ sourcePath: '/Photos' }), mockCloudery, logger, config, passThroughRunner)
     expect(mockStack.getNextcloudSize).toHaveBeenCalledWith('acc-123', '/Photos')
   })
 
@@ -201,7 +210,7 @@ describe('handleMigrationMessage', () => {
     )
 
     await expect(
-      handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
+      handleMigrationMessage(makeCommand(), mockCloudery, logger, config, passThroughRunner)
     ).rejects.toThrow('503')
   })
 
@@ -211,7 +220,7 @@ describe('handleMigrationMessage', () => {
         Object.assign(new Error('not found'), { status: 404 }),
       )
 
-      await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
+      await handleMigrationMessage(makeCommand(), mockCloudery, logger, config, passThroughRunner)
 
       expect(runMigration).not.toHaveBeenCalled()
       expect(mockStack.updateTrackingDoc).not.toHaveBeenCalled()
@@ -223,7 +232,7 @@ describe('handleMigrationMessage', () => {
       )
 
       await expect(
-        handleMigrationMessage(makeCommand(), mockCloudery, logger, config),
+        handleMigrationMessage(makeCommand(), mockCloudery, logger, config, passThroughRunner),
       ).rejects.toThrow(/Internal Server Error/)
     })
 
@@ -237,6 +246,7 @@ describe('handleMigrationMessage', () => {
         mockCloudery,
         logger,
         config,
+        passThroughRunner,
       )
 
       expect(runMigration).not.toHaveBeenCalled()
@@ -251,7 +261,7 @@ describe('handleMigrationMessage', () => {
       )
 
       await expect(
-        handleMigrationMessage(makeCommand(), mockCloudery, logger, config),
+        handleMigrationMessage(makeCommand(), mockCloudery, logger, config, passThroughRunner),
       ).rejects.toThrow(/Bad Gateway/)
     })
   })

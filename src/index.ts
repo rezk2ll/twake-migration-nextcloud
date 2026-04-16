@@ -3,11 +3,17 @@ import { RabbitMQClient, type RabbitMQMessage } from '@linagora/rabbitmq-client'
 import { loadConfig } from './runtime/config.js'
 import { createClouderyClient } from './clients/cloudery-client.js'
 import { handleMigrationMessage } from './runtime/consumer.js'
+import { createMigrationRunner } from './runtime/migration-runner.js'
 import { parseMigrationCommand } from './domain/types.js'
 
 const EXCHANGE = 'migration'
 const ROUTING_KEY = 'nextcloud.migration.requested'
 const QUEUE = 'migration.nextcloud.commands'
+/** How long we give in-flight migrations to finish on SIGTERM/SIGINT
+ * before exiting anyway. The heartbeat/stale-recovery logic picks up
+ * anything we leave behind, so this is a politeness ceiling rather
+ * than a correctness one. */
+const SHUTDOWN_DRAIN_MS = 60_000
 
 async function main(): Promise<void> {
   const config = loadConfig()
@@ -19,6 +25,7 @@ async function main(): Promise<void> {
   logger.info({ event: 'service.starting' }, 'Starting Nextcloud migration service')
 
   const clouderyClient = createClouderyClient(config.clouderyUrl, config.clouderyToken, logger)
+  const migrationRunner = createMigrationRunner(config.maxConcurrentMigrations, logger)
 
   const rabbitClient = new RabbitMQClient({
     url: config.rabbitmqUrl,
@@ -49,7 +56,7 @@ async function main(): Promise<void> {
         }, 'Dropping malformed migration message')
         return
       }
-      await handleMigrationMessage(command, clouderyClient, logger, config)
+      await handleMigrationMessage(command, clouderyClient, logger, config, migrationRunner)
     }
   )
   logger.info({
@@ -63,9 +70,18 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     if (shuttingDown) return
     shuttingDown = true
-    logger.info({ event: 'service.shutting_down', signal }, 'Shutting down')
+    logger.info({
+      event: 'service.shutting_down',
+      signal,
+      active_migrations: migrationRunner.active,
+    }, 'Shutting down')
     await rabbitClient.close()
-    logger.info({ event: 'service.stopped' }, 'RabbitMQ connection closed')
+    const drained = await migrationRunner.drain(SHUTDOWN_DRAIN_MS)
+    logger.info({
+      event: 'service.stopped',
+      drained,
+      still_active: migrationRunner.active,
+    }, drained ? 'All migrations drained, exiting cleanly' : 'Drain deadline hit, exiting with active migrations')
     process.exit(0)
   }
 
