@@ -4,9 +4,9 @@ import type { MigrationCommand } from './types.js'
 import { getErrorMessage } from './errors.js'
 import {
   setRunning,
-  setCompleted,
-  setFailed,
   flushProgress,
+  flushAndComplete,
+  flushAndFail,
   emptyLocalProgress,
   isConflictError,
   type LocalProgress,
@@ -187,7 +187,7 @@ async function traverseDir(
  *
  * Never throws: any error (including traversal, transfer, or tracking-doc
  * write failures) is caught, logged, and persisted on the tracking doc via
- * {@link setFailed}. Callers can attach a `.catch` for defensive logging
+ * {@link flushAndFail}. Callers can attach a `.catch` for defensive logging
  * but do not need to propagate failures.
  *
  * @param command - Migration command from RabbitMQ (account, source path, ids)
@@ -238,8 +238,12 @@ export async function runMigration(
     await setRunning(stackClient, command.migrationId, bytesTotal)
     const targetDirId = await ensureTargetDir(stackClient, targetDir)
     await traverseDir(command.accountId, command.sourcePath || '/', targetDirId, ctx)
-    await flush(ctx)
-    await setCompleted(stackClient, command.migrationId)
+    await flushAndComplete(
+      stackClient,
+      command.migrationId,
+      ctx.pending,
+      ctx.discovered.filesTotal,
+    )
 
     migrationLogger.info({
       event: 'migration.completed',
@@ -265,8 +269,13 @@ export async function runMigration(
       error: message,
     }, 'Migration failed')
     try {
-      await flush(ctx)
-      await setFailed(stackClient, command.migrationId, message)
+      await flushAndFail(
+        stackClient,
+        command.migrationId,
+        message,
+        ctx.pending,
+        ctx.discovered.filesTotal,
+      )
     } catch (trackingError) {
       migrationLogger.error({
         event: 'migration.tracking_update_failed',

@@ -201,6 +201,101 @@ export async function flushProgress(
   await updateTracking(stackClient, docId, (doc) => ({
     ...doc,
     last_heartbeat_at: now,
+    ...mergeLocalProgress(doc, local, filesDiscovered),
+  }))
+}
+
+/**
+ * Atomic terminal write for the success path: applies any pending
+ * progress deltas AND transitions to `completed` in a single CouchDB
+ * round trip. Previously the migration did `flushProgress` followed
+ * by `setCompleted` as two separate writes; a crash in between left
+ * the doc stuck in `running` with full progress but no terminal
+ * status — a zombie the heartbeat logic would eventually reclaim.
+ *
+ * Same transition guards as {@link setCompleted}: no-op when the doc
+ * is already `completed`, refuses to overwrite `failed`.
+ *
+ * @param stackClient - Stack API client
+ * @param docId - Tracking document ID
+ * @param local - Pending deltas accumulated since the last flush
+ * @param filesDiscovered - Total files discovered during traversal
+ */
+export async function flushAndComplete(
+  stackClient: StackClient,
+  docId: string,
+  local: LocalProgress,
+  filesDiscovered: number,
+): Promise<void> {
+  const now = new Date().toISOString()
+  await updateTracking(stackClient, docId, (doc) => {
+    if (doc.status === 'completed') return doc
+    if (doc.status === 'failed') {
+      throw new IllegalStatusTransitionError(doc.status, 'completed')
+    }
+    return {
+      ...doc,
+      status: 'completed',
+      finished_at: now,
+      last_heartbeat_at: now,
+      ...mergeLocalProgress(doc, local, filesDiscovered),
+    }
+  })
+}
+
+/**
+ * Atomic terminal write for the failure path: applies any pending
+ * progress deltas AND transitions to `failed` in a single CouchDB
+ * round trip. The fatal error message is appended to the per-file
+ * `errors` array with an empty `path` to mark it as a migration-level
+ * failure rather than a specific-file failure.
+ *
+ * Same transition guards as {@link setFailed}: no-op when already
+ * failed, refuses to overwrite `completed`.
+ *
+ * @param stackClient - Stack API client
+ * @param docId - Tracking document ID
+ * @param errorMessage - Human-readable failure reason
+ * @param local - Pending deltas accumulated since the last flush
+ * @param filesDiscovered - Total files discovered during traversal
+ */
+export async function flushAndFail(
+  stackClient: StackClient,
+  docId: string,
+  errorMessage: string,
+  local: LocalProgress,
+  filesDiscovered: number,
+): Promise<void> {
+  const now = new Date().toISOString()
+  await updateTracking(stackClient, docId, (doc) => {
+    if (doc.status === 'failed') return doc
+    if (doc.status === 'completed') {
+      throw new IllegalStatusTransitionError(doc.status, 'failed')
+    }
+    const merged = mergeLocalProgress(doc, local, filesDiscovered)
+    return {
+      ...doc,
+      status: 'failed',
+      finished_at: now,
+      last_heartbeat_at: now,
+      ...merged,
+      errors: [...merged.errors, { path: '', message: errorMessage, at: now }],
+    }
+  })
+}
+
+/**
+ * Shared merger for the flush + terminal writes: adds local deltas to
+ * the remote progress counters (never rewriting `bytes_total`),
+ * updates `files_total` to the live discovery count, and concatenates
+ * per-file errors and skips.
+ */
+function mergeLocalProgress(
+  doc: TrackingDoc,
+  local: LocalProgress,
+  filesDiscovered: number,
+): Pick<TrackingDoc, 'progress' | 'errors' | 'skipped'> {
+  return {
     progress: {
       ...doc.progress,
       bytes_imported: doc.progress.bytes_imported + local.bytesImported,
@@ -209,5 +304,5 @@ export async function flushProgress(
     },
     errors: [...doc.errors, ...local.errors],
     skipped: [...doc.skipped, ...local.skipped],
-  }))
+  }
 }

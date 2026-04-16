@@ -5,6 +5,8 @@ import {
   setCompleted,
   setFailed,
   flushProgress,
+  flushAndComplete,
+  flushAndFail,
   isConflictError,
   isStaleRunning,
   STALE_HEARTBEAT_MS,
@@ -248,6 +250,101 @@ describe('flushProgress', () => {
 
     const calledDoc = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
     expect(calledDoc.last_heartbeat_at).toBeDefined()
+  })
+})
+
+describe('flushAndComplete', () => {
+  it('applies local deltas and sets completed in a single write', async () => {
+    const doc = makeDoc({
+      status: 'running',
+      started_at: '2024-01-01T00:00:00.000Z',
+      progress: { bytes_imported: 100, files_imported: 2, bytes_total: 5000, files_total: 3 },
+      errors: [],
+      skipped: [],
+    })
+    const stack = makeMockStack(doc)
+
+    await flushAndComplete(stack, 'mig-1', {
+      bytesImported: 500,
+      filesImported: 3,
+      errors: [{ path: '/bad', message: 'x', at: '2024-01-02T00:00:00.000Z' }],
+      skipped: [{ path: '/dup', reason: 'already exists', size: 10 }],
+    }, 5)
+
+    expect(stack.updateTrackingDoc).toHaveBeenCalledTimes(1)
+    const written = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
+    expect(written.status).toBe('completed')
+    expect(written.finished_at).toBeDefined()
+    expect(written.progress.bytes_imported).toBe(600)
+    expect(written.progress.files_imported).toBe(5)
+    expect(written.progress.files_total).toBe(5)
+    expect(written.errors).toHaveLength(1)
+    expect(written.skipped).toHaveLength(1)
+  })
+
+  it('is a silent no-op when the doc is already completed', async () => {
+    const stack = makeMockStack(makeDoc({ status: 'completed' }))
+
+    await flushAndComplete(stack, 'mig-1', {
+      bytesImported: 0, filesImported: 0, errors: [], skipped: [],
+    }, 0)
+
+    expect(stack.updateTrackingDoc).not.toHaveBeenCalled()
+  })
+
+  it('refuses to overwrite a failed doc', async () => {
+    const stack = makeMockStack(makeDoc({ status: 'failed' }))
+
+    await expect(flushAndComplete(stack, 'mig-1', {
+      bytesImported: 0, filesImported: 0, errors: [], skipped: [],
+    }, 0)).rejects.toBeInstanceOf(IllegalStatusTransitionError)
+  })
+})
+
+describe('flushAndFail', () => {
+  it('applies local deltas, appends the fatal error, and sets failed', async () => {
+    const doc = makeDoc({
+      status: 'running',
+      progress: { bytes_imported: 100, files_imported: 2, bytes_total: 5000, files_total: 3 },
+      errors: [],
+    })
+    const stack = makeMockStack(doc)
+
+    await flushAndFail(stack, 'mig-1', 'ran out of budget', {
+      bytesImported: 50,
+      filesImported: 1,
+      errors: [{ path: '/partial', message: 'partial failure', at: '2024-01-02T00:00:00.000Z' }],
+      skipped: [],
+    }, 4)
+
+    expect(stack.updateTrackingDoc).toHaveBeenCalledTimes(1)
+    const written = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
+    expect(written.status).toBe('failed')
+    expect(written.finished_at).toBeDefined()
+    expect(written.progress.bytes_imported).toBe(150)
+    expect(written.progress.files_imported).toBe(3)
+    expect(written.errors).toHaveLength(2)
+    // The fatal error is the trailing one; per-file errors come first.
+    expect(written.errors[0]).toMatchObject({ path: '/partial' })
+    expect(written.errors[1]).toMatchObject({ path: '', message: 'ran out of budget' })
+  })
+
+  it('is a silent no-op when the doc is already failed', async () => {
+    const stack = makeMockStack(makeDoc({ status: 'failed' }))
+
+    await flushAndFail(stack, 'mig-1', 'again', {
+      bytesImported: 0, filesImported: 0, errors: [], skipped: [],
+    }, 0)
+
+    expect(stack.updateTrackingDoc).not.toHaveBeenCalled()
+  })
+
+  it('refuses to overwrite a completed doc', async () => {
+    const stack = makeMockStack(makeDoc({ status: 'completed' }))
+
+    await expect(flushAndFail(stack, 'mig-1', 'late', {
+      bytesImported: 0, filesImported: 0, errors: [], skipped: [],
+    }, 0)).rejects.toBeInstanceOf(IllegalStatusTransitionError)
   })
 })
 
