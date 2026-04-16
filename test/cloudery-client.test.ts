@@ -30,7 +30,7 @@ describe('ClouderyClient', () => {
 
     expect(mockFetch).toHaveBeenCalledWith(
       'https://manager.cozycloud.cc/api/public/instances/alice.cozy.example/token',
-      {
+      expect.objectContaining({
         method: 'POST',
         headers: {
           Authorization: 'Bearer api-secret',
@@ -40,7 +40,8 @@ describe('ClouderyClient', () => {
           audience: 'app',
           scope: MIGRATION_TOKEN_SCOPE,
         }),
-      }
+        signal: expect.any(AbortSignal),
+      })
     )
     expect(token).toBe('instance-jwt')
   })
@@ -56,5 +57,28 @@ describe('ClouderyClient', () => {
     await expect(client.getToken('unknown.cozy.example')).rejects.toThrow(
       'Cloudery token request failed (404): instance not found'
     )
+  })
+
+  it('rejects with a timeout error when the fetch exceeds the ceiling', async () => {
+    // Drive wall-clock via fake timers so we can fast-forward past the
+    // 30s ceiling without actually waiting. The mocked fetch rejects
+    // with the same AbortError shape Node produces on signal abort.
+    vi.useFakeTimers()
+    const mockFetch = vi.mocked(fetch)
+    mockFetch.mockImplementationOnce((_url, init) => {
+      return new Promise((_resolve, reject) => {
+        const signal = (init as RequestInit | undefined)?.signal
+        signal?.addEventListener('abort', () => {
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        })
+      })
+    })
+
+    const client = createClouderyClient(CLOUDERY_URL, CLOUDERY_TOKEN, logger)
+    const pending = client.getToken('alice.cozy.example')
+    const assertion = expect(pending).rejects.toThrow(/timed out after 30000ms/)
+    await vi.advanceTimersByTimeAsync(30_000)
+    await assertion
+    vi.useRealTimers()
   })
 })

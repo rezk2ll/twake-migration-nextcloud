@@ -4,6 +4,17 @@ import type { CozyStackClient as CozyStackClientType } from 'cozy-stack-client'
 import type { ClouderyClient } from './cloudery-client.js'
 import type { TrackingDoc } from '../domain/types.js'
 import { DOCTYPES } from '../domain/doctypes.js'
+import { withTimeout } from './with-timeout.js'
+
+/**
+ * Per-request ceilings for Stack calls. Metadata operations should return
+ * within a handful of seconds; the transfer ceiling is deliberately large
+ * so big files have room to finish while still bounding a truly stuck
+ * socket. The Stack client library does not accept an AbortSignal, so
+ * these timeouts free the caller but the underlying socket may linger.
+ */
+const METADATA_TIMEOUT_MS = 60_000
+const TRANSFER_TIMEOUT_MS = 15 * 60_000
 
 export interface NextcloudEntry {
   type: 'file' | 'directory'
@@ -107,6 +118,23 @@ export function createStackClient(
     }
   }
 
+  /**
+   * Applies both cross-cutting concerns every Stack call needs: a
+   * per-request timeout and automatic 401 token refresh. The timeout is
+   * intentionally outside the refresh so a stalled socket does not
+   * multiply its cost by a retry.
+   * @param operation - Raw Stack call to run
+   * @param timeoutMs - Per-call ceiling including any 401 retry
+   * @param label - Short name included in timeout error messages
+   */
+  async function call<T>(
+    operation: () => Promise<T>,
+    timeoutMs: number,
+    label: string,
+  ): Promise<T> {
+    return withTimeout(() => withTokenRefresh(operation), timeoutMs, label)
+  }
+
   return {
     /**
      * @param accountId - Nextcloud account ID (io.cozy.accounts)
@@ -114,11 +142,14 @@ export function createStackClient(
      * @returns Array of file and directory entries
      */
     async listNextcloudDir(accountId: string, path: string): Promise<NextcloudEntry[]> {
-      const { data } = await withTokenRefresh(() =>
-        ncCollection.find({
-          'cozyMetadata.sourceAccount': accountId,
-          parentPath: path,
-        })
+      const { data } = await call(
+        () =>
+          ncCollection.find({
+            'cozyMetadata.sourceAccount': accountId,
+            parentPath: path,
+          }),
+        METADATA_TIMEOUT_MS,
+        'listNextcloudDir',
       ) as { data: Array<Record<string, unknown>> }
 
       return data.map((entry) => ({
@@ -151,8 +182,10 @@ export function createStackClient(
       const trimmed = encodedPath.startsWith('/') ? encodedPath : '/' + encodedPath
       const url = `/remote/nextcloud/${encodeURIComponent(accountId)}/size${trimmed}`
 
-      const body = await withTokenRefresh(() =>
-        cozy.fetchJSON('GET', url),
+      const body = await call(
+        () => cozy.fetchJSON('GET', url),
+        METADATA_TIMEOUT_MS,
+        'getNextcloudSize',
       ) as { size: number | string }
       return typeof body.size === 'string' ? parseInt(body.size, 10) : body.size
     },
@@ -187,8 +220,10 @@ export function createStackClient(
         `/remote/nextcloud/${encodeURIComponent(accountId)}/downstream${encodedPath}` +
         `?To=${encodeURIComponent(cozyDirId)}&Copy=true&FailOnConflict=true`
 
-      const body = await withTokenRefresh(() =>
-        cozy.fetchJSON('POST', url),
+      const body = await call(
+        () => cozy.fetchJSON('POST', url),
+        TRANSFER_TIMEOUT_MS,
+        'transferFile',
       ) as { data: { id: string; attributes: Record<string, unknown> } }
       const attrs = body.data.attributes
       return {
@@ -209,8 +244,10 @@ export function createStackClient(
      */
     async createDir(parentDirId: string, name: string): Promise<string> {
       try {
-        const { data } = await withTokenRefresh(() =>
-          fileCollection.createDirectory({ name, dirId: parentDirId })
+        const { data } = await call(
+          () => fileCollection.createDirectory({ name, dirId: parentDirId }),
+          METADATA_TIMEOUT_MS,
+          'createDir',
         )
         return data._id as string
       } catch (error: unknown) {
@@ -223,8 +260,11 @@ export function createStackClient(
         // matching child by name. Reading `error.response.json()` would
         // crash with "Body is unusable" because cozy-stack-client already
         // drained it while constructing the FetchError — never go there.
-        const parent = await withTokenRefresh(() =>
-          cozy.fetchJSON('GET', `/files/${encodeURIComponent(parentDirId)}?page[limit]=1000`)
+        const parent = await call(
+          () =>
+            cozy.fetchJSON('GET', `/files/${encodeURIComponent(parentDirId)}?page[limit]=1000`),
+          METADATA_TIMEOUT_MS,
+          'createDir.lookupExisting',
         ) as {
           included?: Array<{ id: string; attributes: { name: string; type: string } }>
         }
@@ -242,8 +282,10 @@ export function createStackClient(
      * @returns Disk usage (used bytes) and quota for the instance. Quota 0 means unlimited.
      */
     async getDiskUsage(): Promise<DiskUsage> {
-      const { data } = await withTokenRefresh(() =>
-        settingsCollection.get('io.cozy.settings.disk-usage')
+      const { data } = await call(
+        () => settingsCollection.get('io.cozy.settings.disk-usage'),
+        METADATA_TIMEOUT_MS,
+        'getDiskUsage',
       )
       const attrs = data.attributes as Record<string, string>
       return {
@@ -257,8 +299,10 @@ export function createStackClient(
      * @returns The full tracking document from CouchDB
      */
     async getTrackingDoc(id: string): Promise<TrackingDoc> {
-      const { data } = await withTokenRefresh(() =>
-        docCollection.get(id)
+      const { data } = await call(
+        () => docCollection.get(id),
+        METADATA_TIMEOUT_MS,
+        'getTrackingDoc',
       )
       return data as unknown as TrackingDoc
     },
@@ -268,8 +312,10 @@ export function createStackClient(
      * @returns The document with updated _rev from CouchDB
      */
     async updateTrackingDoc(doc: TrackingDoc): Promise<TrackingDoc> {
-      const { data } = await withTokenRefresh(() =>
-        docCollection.update(doc as unknown as Record<string, unknown>)
+      const { data } = await call(
+        () => docCollection.update(doc as unknown as Record<string, unknown>),
+        METADATA_TIMEOUT_MS,
+        'updateTrackingDoc',
       )
       return { ...doc, _rev: data._rev as string }
     },

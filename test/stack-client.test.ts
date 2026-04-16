@@ -306,6 +306,23 @@ describe('StackClient', () => {
     })
   })
 
+  describe('timeout', () => {
+    it('rejects with a labelled timeout when a Stack call stalls', async () => {
+      // Use fake timers so we do not actually wait 60s. The mocked call
+      // returns a promise that never settles, so only the timeout branch
+      // can win the race.
+      vi.useFakeTimers()
+      mockFind.mockReturnValueOnce(new Promise(() => { /* never */ }))
+
+      const client = createStackClient(FQDN, 'https', TOKEN, mockCloudery, logger)
+      const pending = client.listNextcloudDir('acc-123', '/')
+      const assertion = expect(pending).rejects.toThrow(/listNextcloudDir timed out/)
+      await vi.advanceTimersByTimeAsync(60_000)
+      await assertion
+      vi.useRealTimers()
+    })
+  })
+
   describe('token refresh on 401', () => {
     it('refreshes token and retries on 401 from collection', async () => {
       const entries = [{ type: 'file', name: 'a.txt', path: '/a.txt', size: 10, mime: 'text/plain' }]
