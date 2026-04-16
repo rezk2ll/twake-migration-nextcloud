@@ -251,6 +251,38 @@ describe('flushProgress', () => {
     const calledDoc = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
     expect(calledDoc.last_heartbeat_at).toBeDefined()
   })
+
+  it('keeps files_total monotonic — a resumed walk cannot regress it', async () => {
+    // Simulate a resumed migration: doc already has files_total=42 from
+    // the first run; the second run's discovery counter starts at 0.
+    // If flushProgress overwrote blindly the UI would regress to 5.
+    const doc = makeDoc({
+      status: 'running',
+      progress: { bytes_imported: 0, files_imported: 0, bytes_total: 1000, files_total: 42 },
+    })
+    const stack = makeMockStack(doc)
+
+    await flushProgress(stack, 'mig-1', {
+      bytesImported: 0, filesImported: 0, errors: [], skipped: [],
+    }, 5)
+
+    const calledDoc = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
+    expect(calledDoc.progress.files_total).toBe(42)
+  })
+
+  it('advances files_total when the current discovery outgrows the stored value', async () => {
+    const doc = makeDoc({
+      progress: { bytes_imported: 0, files_imported: 0, bytes_total: 1000, files_total: 10 },
+    })
+    const stack = makeMockStack(doc)
+
+    await flushProgress(stack, 'mig-1', {
+      bytesImported: 0, filesImported: 0, errors: [], skipped: [],
+    }, 25)
+
+    const calledDoc = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
+    expect(calledDoc.progress.files_total).toBe(25)
+  })
 })
 
 describe('flushAndComplete', () => {

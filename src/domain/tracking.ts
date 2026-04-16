@@ -287,8 +287,11 @@ export async function flushAndFail(
 /**
  * Shared merger for the flush + terminal writes: adds local deltas to
  * the remote progress counters (never rewriting `bytes_total`),
- * updates `files_total` to the live discovery count, and concatenates
- * per-file errors and skips.
+ * advances `files_total` monotonically, and concatenates per-file
+ * errors and skips. The max on `files_total` matters because a
+ * resumed migration restarts its discovery counter at 0; overwriting
+ * blindly would regress the UI's progress denominator back to zero
+ * on every resumed run.
  */
 function mergeLocalProgress(
   doc: TrackingDoc,
@@ -300,7 +303,7 @@ function mergeLocalProgress(
       ...doc.progress,
       bytes_imported: doc.progress.bytes_imported + local.bytesImported,
       files_imported: doc.progress.files_imported + local.filesImported,
-      files_total: filesDiscovered,
+      files_total: Math.max(doc.progress.files_total, filesDiscovered),
     },
     errors: [...doc.errors, ...local.errors],
     skipped: [...doc.skipped, ...local.skipped],
