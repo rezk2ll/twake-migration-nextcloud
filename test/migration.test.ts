@@ -181,6 +181,38 @@ describe('runMigration', () => {
     expect(stack.transferFile).toHaveBeenCalledWith('acc-123', '/photo.jpg', 'from-nc-id')
   })
 
+  it('handles pathologically deep trees without overflowing the call stack', async () => {
+    // Recursive traversal blew up around 10k frames. The iterative
+    // walker uses an explicit heap stack, so a chain of 5000 nested
+    // directories should finish without a RangeError.
+    const DEPTH = 5_000
+    const listMock = vi.fn().mockImplementation(async (_acc: string, path: string) => {
+      if (path === '/deepest/leaf.txt') return []
+      // Every intermediate directory contains a single child directory.
+      const depth = path === '/' ? 0 : path.split('/').filter(Boolean).length
+      if (depth < DEPTH) {
+        return [
+          { type: 'directory', name: `d${depth}`, path: `${path === '/' ? '' : path}/d${depth}`, size: 0, mime: '' },
+        ]
+      }
+      // At the deepest level, a single file ends the chain.
+      return [
+        { type: 'file', name: 'leaf.txt', path: `${path}/leaf.txt`, size: 1, mime: 'text/plain' },
+      ]
+    })
+    const stack = makeStack({
+      listNextcloudDir: listMock,
+      createDir: vi.fn().mockImplementation(async () => `dir-${Math.random()}`),
+      transferFile: vi.fn().mockResolvedValue({ id: 'leaf', name: 'leaf.txt', dir_id: 'd', size: 1 }),
+    })
+
+    await runMigration(makeCommand(), stack, logger, 0, '/Nextcloud')
+
+    expect(stack.transferFile).toHaveBeenCalledTimes(1)
+    // Every level should have been listed.
+    expect(listMock.mock.calls.length).toBeGreaterThan(DEPTH)
+  })
+
   it('seeds bytes_total on the running-state update from the passed argument', async () => {
     // The frontend renders a progress bar from bytes_imported / bytes_total,
     // so bytes_total must be set once at the start (from the pre-flight
