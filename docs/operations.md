@@ -18,8 +18,8 @@ Every log line carries a stable `event` field. Route these to your alert pipelin
 
 | Event | Severity | When |
 |---|---|---|
-| `service.stopped` with `drained: false` | warn | Shutdown hit the 60 s drain deadline. Heartbeat recovery will pick up the stragglers, but investigate if this keeps happening. |
-| `cloudery.token_failed` with `attempts: 3` | warn | Cloudery retry budget exhausted. A short blip is fine; sustained means the Cloudery is down or your `CLOUDERY_TOKEN` is wrong. |
+| `service.stopped` with `drained: false` | info | Shutdown hit the 60 s drain deadline. Heartbeat recovery will pick up the stragglers, but investigate if this keeps happening. |
+| `cloudery.token_failed` with `attempts: 3` | error | Cloudery retry budget exhausted — all three attempts failed. A short blip is fine; sustained means the Cloudery is down or your `CLOUDERY_TOKEN` is wrong. Alert on this specific variant with `attempts`, not on every `cloudery.token_failed`: the warn-level ones without `attempts` fire on each individual attempt and are expected noise during a retry. |
 | `consumer.migration_unhandled_error` | error | A migration blew past the internal catch. Code bug; capture the stack trace. |
 | `migration.tracking_update_failed` | error | Couldn't persist the terminal state of a migration. The doc is now a stale-running zombie; heartbeat logic will eventually reclaim it. |
 | `runner.drain_timeout` | warn | In-flight migrations did not finish within the shutdown deadline. Expected during rolling deploys; persistent occurrences mean you're running very long migrations. |
