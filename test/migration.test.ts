@@ -8,7 +8,11 @@ function makeStack(overrides: Partial<StackClient> = {}): StackClient {
   return {
     listNextcloudDir: vi.fn().mockResolvedValue([]),
     transferFile: vi.fn().mockResolvedValue({ id: 'f1', name: 'f', dir_id: 'd', size: 100 }),
-    createDir: vi.fn().mockResolvedValue('dir-id'),
+    ensureDirPath: vi.fn().mockResolvedValue({ id: 'dir-id', path: '/Nextcloud' }),
+    ensureChildDir: vi.fn().mockImplementation(async (name: string, parent: { id: string; path: string }) => ({
+      id: `${parent.id}/${name}`,
+      path: `${parent.path}/${name}`,
+    })),
     getDiskUsage: vi.fn().mockResolvedValue({ used: 1000, quota: 100000 }),
     getTrackingDoc: vi.fn().mockResolvedValue({
       _id: 'mig-1',
@@ -58,13 +62,12 @@ describe('runMigration', () => {
 
     await runMigration(makeCommand(), stack, logger, 0, '/Nextcloud')
 
-    // Creates /Nextcloud target directory
-    expect(stack.createDir).toHaveBeenCalledWith('io.cozy.files.root-dir', 'Nextcloud')
-    // Transfers both files
+    // Uses the Stack's path-based ensureDir helper; no 409 dance.
+    expect(stack.ensureDirPath).toHaveBeenCalledWith('/Nextcloud')
+    // Transfers both files into the target dir id returned by ensureDirPath.
     expect(stack.transferFile).toHaveBeenCalledTimes(2)
     expect(stack.transferFile).toHaveBeenCalledWith('acc-123', '/photo.jpg', 'dir-id')
     expect(stack.transferFile).toHaveBeenCalledWith('acc-123', '/doc.pdf', 'dir-id')
-    // Updates tracking: running, increments, updateBytesTotal, completed
     expect(stack.updateTrackingDoc).toHaveBeenCalled()
   })
 
@@ -77,19 +80,19 @@ describe('runMigration', () => {
     ]
     const stack = makeStack({
       listNextcloudDir: vi.fn()
-        .mockResolvedValueOnce(rootEntries)   // traverseDir lists root
-        .mockResolvedValueOnce(subEntries),   // traverseDir lists /Photos
-      createDir: vi.fn()
-        .mockResolvedValueOnce('nextcloud-dir')   // /Nextcloud
-        .mockResolvedValueOnce('photos-dir'),      // /Nextcloud/Photos
+        .mockResolvedValueOnce(rootEntries)
+        .mockResolvedValueOnce(subEntries),
+      ensureDirPath: vi.fn().mockResolvedValue({ id: 'nextcloud-dir', path: '/Nextcloud' }),
+      ensureChildDir: vi.fn().mockResolvedValueOnce({ id: 'photos-dir', path: '/Nextcloud/Photos' }),
     })
 
     await runMigration(makeCommand(), stack, logger, 0, '/Nextcloud')
 
-    // Creates both directories
-    expect(stack.createDir).toHaveBeenCalledWith('io.cozy.files.root-dir', 'Nextcloud')
-    expect(stack.createDir).toHaveBeenCalledWith('nextcloud-dir', 'Photos')
-    // Transfers the file into the Photos subdirectory
+    expect(stack.ensureDirPath).toHaveBeenCalledWith('/Nextcloud')
+    expect(stack.ensureChildDir).toHaveBeenCalledWith(
+      'Photos',
+      { id: 'nextcloud-dir', path: '/Nextcloud' },
+    )
     expect(stack.transferFile).toHaveBeenCalledWith('acc-123', '/Photos/sunset.jpg', 'photos-dir')
   })
 
@@ -142,11 +145,11 @@ describe('runMigration', () => {
       { type: 'file', name: 'ok.txt', path: '/ok.txt', size: 100, mime: 'text/plain' },
     ]
     const stack = makeStack({
-      listNextcloudDir: vi.fn()
-        .mockResolvedValueOnce(entries),      // traverseDir lists root
-      createDir: vi.fn()
-        .mockResolvedValueOnce('target-dir')  // /Nextcloud
-        .mockRejectedValueOnce(new Error('Stack request failed (500): internal')),  // /Nextcloud/Broken fails
+      listNextcloudDir: vi.fn().mockResolvedValueOnce(entries),
+      ensureDirPath: vi.fn().mockResolvedValue({ id: 'target-dir', path: '/Nextcloud' }),
+      ensureChildDir: vi.fn().mockRejectedValueOnce(
+        new Error('Stack request failed (500): internal'),
+      ),
     })
 
     await runMigration(makeCommand(), stack, logger, 0, '/Nextcloud')
@@ -163,21 +166,24 @@ describe('runMigration', () => {
     expect(stack.transferFile).toHaveBeenCalledWith('acc-123', '/ok.txt', 'target-dir')
   })
 
-  it('creates each segment of a nested target_dir before transferring', async () => {
+  it('creates the nested target_dir in a single ensureDirPath call', async () => {
     const entries: NextcloudEntry[] = [
       { type: 'file', name: 'photo.jpg', path: '/photo.jpg', size: 100, mime: 'image/jpeg' },
     ]
     const stack = makeStack({
       listNextcloudDir: vi.fn().mockResolvedValueOnce(entries),
-      createDir: vi.fn()
-        .mockResolvedValueOnce('imports-id')
-        .mockResolvedValueOnce('from-nc-id'),
+      ensureDirPath: vi.fn().mockResolvedValue({
+        id: 'from-nc-id',
+        path: '/Imports/From Nextcloud',
+      }),
     })
 
     await runMigration(makeCommand(), stack, logger, 0, '/Imports/From Nextcloud')
 
-    expect(stack.createDir).toHaveBeenNthCalledWith(1, 'io.cozy.files.root-dir', 'Imports')
-    expect(stack.createDir).toHaveBeenNthCalledWith(2, 'imports-id', 'From Nextcloud')
+    // The library walks and creates each segment internally; our
+    // migrator no longer loops over segments itself.
+    expect(stack.ensureDirPath).toHaveBeenCalledTimes(1)
+    expect(stack.ensureDirPath).toHaveBeenCalledWith('/Imports/From Nextcloud')
     expect(stack.transferFile).toHaveBeenCalledWith('acc-123', '/photo.jpg', 'from-nc-id')
   })
 
@@ -202,7 +208,10 @@ describe('runMigration', () => {
     })
     const stack = makeStack({
       listNextcloudDir: listMock,
-      createDir: vi.fn().mockImplementation(async () => `dir-${Math.random()}`),
+      ensureChildDir: vi.fn().mockImplementation(async (name, parent) => ({
+        id: `${parent.id}/${name}`,
+        path: `${parent.path}/${name}`,
+      })),
       transferFile: vi.fn().mockResolvedValue({ id: 'leaf', name: 'leaf.txt', dir_id: 'd', size: 1 }),
     })
 

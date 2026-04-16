@@ -7,7 +7,8 @@ import type { Logger } from 'pino'
 // Mock cozy-stack-client
 const mockFind = vi.fn()
 const mockMoveToCozy = vi.fn()
-const mockCreateDirectory = vi.fn()
+const mockEnsureDirByPath = vi.fn()
+const mockGetOrCreateDir = vi.fn()
 const mockSettingsGet = vi.fn()
 const mockDocGet = vi.fn()
 const mockDocUpdate = vi.fn()
@@ -28,7 +29,10 @@ vi.mock('cozy-stack-client', () => {
         return { find: mockFind, moveToCozy: mockMoveToCozy }
       }
       if (doctype === 'io.cozy.files') {
-        return { createDirectory: mockCreateDirectory }
+        return {
+          createDirectoryByPath: mockEnsureDirByPath,
+          getDirectoryOrCreate: mockGetOrCreateDir,
+        }
       }
       if (doctype === 'io.cozy.settings') {
         return { get: mockSettingsGet }
@@ -191,101 +195,49 @@ describe('StackClient', () => {
     })
   })
 
-  describe('createDir', () => {
-    it('creates a directory and returns its ID', async () => {
-      mockCreateDirectory.mockResolvedValueOnce({
-        data: { _id: 'new-dir-id' },
+  describe('ensureDirPath', () => {
+    it('delegates to createDirectoryByPath and unwraps id + path', async () => {
+      mockEnsureDirByPath.mockResolvedValueOnce({
+        data: { _id: 'leaf-id', attributes: { path: '/Nextcloud/Imports', type: 'directory' } },
       })
 
       const client = createStackClient(FQDN, 'https', TOKEN, mockCloudery, logger)
-      const dirId = await client.createDir('parent-id', 'Photos')
+      const dir = await client.ensureDirPath('/Nextcloud/Imports')
 
-      expect(mockCreateDirectory).toHaveBeenCalledWith({
-        name: 'Photos',
-        dirId: 'parent-id',
+      expect(mockEnsureDirByPath).toHaveBeenCalledWith('/Nextcloud/Imports')
+      expect(dir).toEqual({ id: 'leaf-id', path: '/Nextcloud/Imports' })
+    })
+  })
+
+  describe('ensureChildDir', () => {
+    it('delegates to getDirectoryOrCreate so existence is a stat, not a 409', async () => {
+      // Any existing-dir lookup goes through the library's native
+      // statByPath-then-create-on-404 helper; we should never reach a
+      // 409 path ourselves. Assert the library call shape is correct.
+      mockGetOrCreateDir.mockResolvedValueOnce({
+        data: { _id: 'child-id', attributes: { path: '/Nextcloud/Imports/Photos', type: 'directory' } },
       })
-      expect(dirId).toBe('new-dir-id')
+      const parent = { id: 'parent-id', path: '/Nextcloud/Imports' }
+
+      const client = createStackClient(FQDN, 'https', TOKEN, mockCloudery, logger)
+      const dir = await client.ensureChildDir('Photos', parent)
+
+      expect(mockGetOrCreateDir).toHaveBeenCalledWith('Photos', {
+        _id: 'parent-id',
+        attributes: { path: '/Nextcloud/Imports' },
+      })
+      expect(dir).toEqual({ id: 'child-id', path: '/Nextcloud/Imports/Photos' })
     })
 
-    it('resolves the existing dir by looking it up in the parent on 409', async () => {
-      // The Stack's 409 body does NOT include the existing doc's id —
-      // `errors[0].source` is empty. Recovery has to query the parent's
-      // children and find the match by name. The FetchError thrown by
-      // cozy-stack-client has `status` and an already-parsed `reason`,
-      // but its `response.body` is drained, so we must not re-read it.
-      mockCreateDirectory.mockRejectedValueOnce(
-        Object.assign(new Error('Conflict'), {
-          name: 'FetchError',
-          status: 409,
-          reason: { errors: [{ status: '409', title: 'Conflict', source: {} }] },
-        }),
+    it('propagates unexpected errors from the Stack helper', async () => {
+      mockGetOrCreateDir.mockRejectedValueOnce(
+        Object.assign(new Error('Internal Server Error'), { status: 500 }),
       )
-      mockFetchJSON.mockResolvedValueOnce({
-        data: { id: 'parent-id', type: 'io.cozy.files' },
-        included: [
-          { id: 'sibling', type: 'io.cozy.files', attributes: { name: 'Other', type: 'directory' } },
-          { id: 'existing-dir-id', type: 'io.cozy.files', attributes: { name: 'Photos', type: 'directory' } },
-        ],
-      })
 
       const client = createStackClient(FQDN, 'https', TOKEN, mockCloudery, logger)
-      const dirId = await client.createDir('parent-id', 'Photos')
-
-      expect(dirId).toBe('existing-dir-id')
-      expect(mockFetchJSON).toHaveBeenCalledWith('GET', expect.stringContaining('/files/parent-id'))
-    })
-
-    it('surfaces a clear error when 409 recovery cannot find the matching child', async () => {
-      mockCreateDirectory.mockRejectedValueOnce(
-        Object.assign(new Error('Conflict'), {
-          name: 'FetchError',
-          status: 409,
-          reason: { errors: [] },
-        }),
-      )
-      mockFetchJSON.mockResolvedValueOnce({
-        data: { id: 'parent-id', type: 'io.cozy.files' },
-        included: [
-          { id: 'other', type: 'io.cozy.files', attributes: { name: 'NotTheOne', type: 'directory' } },
-        ],
-      })
-
-      const client = createStackClient(FQDN, 'https', TOKEN, mockCloudery, logger)
-      await expect(client.createDir('parent-id', 'Photos')).rejects.toThrow(
-        /could not find existing directory/i,
-      )
-    })
-
-    it('walks pagination links to find the child when the first page misses', async () => {
-      mockCreateDirectory.mockRejectedValueOnce(
-        Object.assign(new Error('Conflict'), {
-          name: 'FetchError',
-          status: 409,
-          reason: { errors: [{ status: '409', title: 'Conflict', source: {} }] },
-        }),
-      )
-      // First page: not found, but has a next link.
-      mockFetchJSON.mockResolvedValueOnce({
-        data: { id: 'parent-id', type: 'io.cozy.files' },
-        included: [
-          { id: 'sibling', type: 'io.cozy.files', attributes: { name: 'Other', type: 'directory' } },
-        ],
-        links: { next: '/files/parent-id?page[cursor]=abc' },
-      })
-      // Second page: contains the match.
-      mockFetchJSON.mockResolvedValueOnce({
-        data: { id: 'parent-id', type: 'io.cozy.files' },
-        included: [
-          { id: 'existing-dir-id', type: 'io.cozy.files', attributes: { name: 'Photos', type: 'directory' } },
-        ],
-      })
-
-      const client = createStackClient(FQDN, 'https', TOKEN, mockCloudery, logger)
-      const dirId = await client.createDir('parent-id', 'Photos')
-
-      expect(dirId).toBe('existing-dir-id')
-      expect(mockFetchJSON).toHaveBeenCalledTimes(2)
-      expect(mockFetchJSON).toHaveBeenNthCalledWith(2, 'GET', '/files/parent-id?page[cursor]=abc')
+      await expect(
+        client.ensureChildDir('Photos', { id: 'parent-id', path: '/Nextcloud' }),
+      ).rejects.toThrow(/Internal Server Error/)
     })
   })
 

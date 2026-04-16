@@ -16,17 +16,6 @@ import { withTimeout } from './with-timeout.js'
 const METADATA_TIMEOUT_MS = 60_000
 const TRANSFER_TIMEOUT_MS = 15 * 60_000
 
-/**
- * Page size for walking a directory's children during the createDir
- * 409 recovery. Chosen to match the Stack's default so we do not ask
- * for unusual page sizes. Combined with CREATE_DIR_LOOKUP_MAX_PAGES,
- * this caps the recovery at ~10k siblings — well above any realistic
- * tree but bounded so a misbehaving Stack cannot make us loop
- * forever.
- */
-const CREATE_DIR_LOOKUP_PAGE_SIZE = 100
-const CREATE_DIR_LOOKUP_MAX_PAGES = 100
-
 export interface NextcloudEntry {
   type: 'file' | 'directory'
   name: string
@@ -41,6 +30,17 @@ export interface CozyFile {
   name: string
   dir_id: string
   size: number
+}
+
+/**
+ * Minimal identifier for a Cozy directory: its id (used as `dir_id`
+ * on transfers) and its absolute Cozy path (used to compute child
+ * paths). Callers thread this through the traversal instead of
+ * tracking just the id.
+ */
+export interface CozyDir {
+  id: string
+  path: string
 }
 
 export interface DiskUsage {
@@ -71,8 +71,21 @@ export interface StackClient {
   getNextcloudSize(accountId: string, path: string): Promise<number>
   /** Transfers a file from Nextcloud into a Cozy directory (copy, fail on conflict). */
   transferFile(accountId: string, ncPath: string, cozyDirId: string): Promise<CozyFile>
-  /** Creates a directory in Cozy VFS. Returns existing dir ID on 409. */
-  createDir(parentDirId: string, name: string): Promise<string>
+  /**
+   * Idempotently ensures every segment of an absolute Cozy path
+   * exists, creating missing ones. Used once at migration start for
+   * the configured target directory — subsequent per-entry creates
+   * go through {@link ensureChildDir} since we already hold the
+   * parent's stat.
+   */
+  ensureDirPath(path: string): Promise<CozyDir>
+  /**
+   * Idempotently ensures a direct child of `parent` exists. Uses the
+   * Stack's native `statByPath`-then-create-on-404 helper, so there
+   * is no 409 to recover from and no parent-listing walk. Callers
+   * feed the returned stat as the next traversal level's `parent`.
+   */
+  ensureChildDir(name: string, parent: CozyDir): Promise<CozyDir>
   /** Returns disk usage and quota for the Cozy instance. */
   getDiskUsage(): Promise<DiskUsage>
   /** Fetches a tracking document by ID from CouchDB. */
@@ -149,36 +162,19 @@ export function createStackClient(
   }
 
   /**
-   * Walks the parent directory's children page-by-page looking for a
-   * directory named `name`. Returns its ID, or undefined after scanning
-   * every page. The previous single-page fetch silently broke resume
-   * for parents with more children than the hardcoded limit; walking
-   * with JSON-API cursor links handles arbitrarily wide directories at
-   * the cost of extra round trips in the 409-recovery path (which only
-   * runs when a prior consumer crashed mid-migration).
+   * Shape of the stat objects returned by cozy-stack-client's file
+   * collection. We unwrap the pieces we actually need and carry them
+   * around as {@link CozyDir}.
    */
-  async function findExistingChildDir(
-    parentDirId: string,
-    name: string,
-  ): Promise<string | undefined> {
-    let nextUrl: string | undefined =
-      `/files/${encodeURIComponent(parentDirId)}?page[limit]=${CREATE_DIR_LOOKUP_PAGE_SIZE}`
-    for (let page = 0; nextUrl && page < CREATE_DIR_LOOKUP_MAX_PAGES; page++) {
-      const response = await call(
-        () => cozy.fetchJSON('GET', nextUrl as string),
-        METADATA_TIMEOUT_MS,
-        'createDir.lookupExisting',
-      ) as {
-        included?: Array<{ id: string; attributes: { name: string; type: string } }>
-        links?: { next?: string }
-      }
-      const match = response.included?.find(
-        (child) => child.attributes.name === name && child.attributes.type === 'directory',
-      )
-      if (match) return match.id
-      nextUrl = response.links?.next
+  interface StackFileStat {
+    data: {
+      _id: string
+      attributes: { path: string; name?: string; type?: string }
     }
-    return undefined
+  }
+
+  function toCozyDir(stat: StackFileStat): CozyDir {
+    return { id: stat.data._id, path: stat.data.attributes.path }
   }
 
   return {
@@ -281,37 +277,45 @@ export function createStackClient(
     },
 
     /**
-     * Creates a directory in Cozy VFS. If the directory already exists (409),
-     * looks up the existing directory in the parent's children and returns
-     * its ID. This supports idempotent retries of a crashed migration.
-     * @param parentDirId - Parent directory ID in Cozy VFS
-     * @param name - Name of the directory to create
-     * @returns The created or existing directory's ID
+     * Walks every segment of `path` and creates the missing ones.
+     * Delegates to the stack client's `createDirectoryByPath`, which
+     * already statByPath's each segment and only falls through to
+     * create on 404 — so we never see a 409 at this layer.
      */
-    async createDir(parentDirId: string, name: string): Promise<string> {
-      try {
-        const { data } = await call(
-          () => fileCollection.createDirectory({ name, dirId: parentDirId }),
-          METADATA_TIMEOUT_MS,
-          'createDir',
-        )
-        return data._id as string
-      } catch (error: unknown) {
-        const status = (error as { status?: number }).status
-        if (status !== 409) {
-          throw error
-        }
-        // On 409, the Stack's body does not carry the conflicting doc's id
-        // (`errors[0].source` is empty), so we walk the parent's children
-        // and find the matching name. Reading `error.response.json()`
-        // would crash with "Body is unusable" because cozy-stack-client
-        // already drained it while constructing the FetchError.
-        const existingId = await findExistingChildDir(parentDirId, name)
-        if (existingId) return existingId
-        throw new Error(
-          `Stack 409 on createDir but could not find existing directory ${name} under ${parentDirId}`,
-        )
-      }
+    async ensureDirPath(path: string): Promise<CozyDir> {
+      const stat = await call(
+        () =>
+          (fileCollection as unknown as {
+            createDirectoryByPath: (p: string) => Promise<StackFileStat>
+          }).createDirectoryByPath(path),
+        METADATA_TIMEOUT_MS,
+        'ensureDirPath',
+      )
+      return toCozyDir(stat)
+    },
+
+    /**
+     * One-shot statByPath-or-create for a direct child of `parent`.
+     * Replaces the old `createDir` plus its 409-recovery loop: the
+     * library's `getDirectoryOrCreate` does one `statByPath` and only
+     * creates if the stat returned 404.
+     */
+    async ensureChildDir(name: string, parent: CozyDir): Promise<CozyDir> {
+      const stat = await call(
+        () =>
+          (fileCollection as unknown as {
+            getDirectoryOrCreate: (
+              n: string,
+              p: { _id: string; attributes: { path: string } },
+            ) => Promise<StackFileStat>
+          }).getDirectoryOrCreate(name, {
+            _id: parent.id,
+            attributes: { path: parent.path },
+          }),
+        METADATA_TIMEOUT_MS,
+        'ensureChildDir',
+      )
+      return toCozyDir(stat)
     },
 
     /**

@@ -1,5 +1,5 @@
 import type { Logger } from 'pino'
-import type { StackClient } from '../clients/stack-client.js'
+import type { CozyDir, StackClient } from '../clients/stack-client.js'
 import type { MigrationCommand } from './types.js'
 import { getErrorMessage } from './errors.js'
 import {
@@ -12,32 +12,17 @@ import {
   type LocalProgress,
 } from './tracking.js'
 
-const COZY_ROOT_DIR_ID = 'io.cozy.files.root-dir'
 const DEFAULT_FLUSH_INTERVAL = 25
 
 /**
- * Walks an absolute Cozy path and creates each segment, returning the id of
- * the innermost directory. Segments that already exist are resolved via the
- * Stack's 409 recovery path in createDir, so repeated migrations reuse the
- * same tree instead of piling up "(2)" suffixes.
- * @param stackClient - Stack API client
- * @param targetDir - Absolute path whose segments become a chain of Cozy dirs
- * @returns The Cozy directory ID of the innermost created/reused segment
+ * @param targetDir - Absolute Cozy path whose usable segments are counted
  * @throws If `targetDir` has no usable segments (e.g. `""` or `"/"`)
  */
-async function ensureTargetDir(
-  stackClient: StackClient,
-  targetDir: string
-): Promise<string> {
+function assertTargetDirIsUsable(targetDir: string): void {
   const segments = targetDir.split('/').filter((s) => s !== '')
   if (segments.length === 0) {
     throw new Error(`invalid target_dir: ${targetDir}`)
   }
-  let parentId = COZY_ROOT_DIR_ID
-  for (const name of segments) {
-    parentId = await stackClient.createDir(parentId, name)
-  }
-  return parentId
 }
 
 /**
@@ -91,40 +76,41 @@ async function flush(ctx: MigrationContext): Promise<void> {
 interface PendingDir {
   accountId: string
   ncPath: string
-  cozyDirId: string
+  cozyDir: CozyDir
 }
 
 /**
  * Iteratively walks the Nextcloud tree, transferring files and
  * recording per-directory errors. Uses an explicit LIFO stack rather
  * than recursion so a pathologically deep tree cannot overflow the
- * JavaScript call stack. Depth-first order matches the old recursive
- * traversal so log output and 409-resume semantics are unchanged.
+ * JavaScript call stack. Each traversal level carries the parent's
+ * full {@link CozyDir} (id + path) so child directories can go
+ * through the Stack's native stat-by-path helper with no 409 dance.
  * Flushes to CouchDB every ctx.flushInterval files.
  */
 async function traverseTree(
   rootAccountId: string,
   rootPath: string,
-  rootCozyDirId: string,
+  rootCozyDir: CozyDir,
   ctx: MigrationContext,
 ): Promise<void> {
   const stack: PendingDir[] = [
-    { accountId: rootAccountId, ncPath: rootPath, cozyDirId: rootCozyDirId },
+    { accountId: rootAccountId, ncPath: rootPath, cozyDir: rootCozyDir },
   ]
   while (stack.length > 0) {
-    const { accountId, ncPath, cozyDirId } = stack.pop() as PendingDir
+    const { accountId, ncPath, cozyDir } = stack.pop() as PendingDir
     const subdirs: PendingDir[] = []
     const entries = await ctx.stackClient.listNextcloudDir(accountId, ncPath)
     for (const entry of entries) {
       if (entry.type === 'directory') {
         try {
-          const subDirId = await ctx.stackClient.createDir(cozyDirId, entry.name)
-          subdirs.push({ accountId, ncPath: entry.path, cozyDirId: subDirId })
+          const childDir = await ctx.stackClient.ensureChildDir(entry.name, cozyDir)
+          subdirs.push({ accountId, ncPath: entry.path, cozyDir: childDir })
         } catch (error) {
           recordDirFailure(ctx, entry.path, error)
         }
       } else {
-        await handleFileEntry(ctx, accountId, cozyDirId, entry)
+        await handleFileEntry(ctx, accountId, cozyDir.id, entry)
       }
     }
     // Push in reverse so the leftmost subdirectory is popped next —
@@ -271,8 +257,9 @@ export async function runMigration(
     migrationLogger.info({ event: 'migration.started' }, 'Migration started')
 
     await setRunning(stackClient, command.migrationId, bytesTotal)
-    const targetDirId = await ensureTargetDir(stackClient, targetDir)
-    await traverseTree(command.accountId, command.sourcePath || '/', targetDirId, ctx)
+    assertTargetDirIsUsable(targetDir)
+    const targetCozyDir = await stackClient.ensureDirPath(targetDir)
+    await traverseTree(command.accountId, command.sourcePath || '/', targetCozyDir, ctx)
     await flushAndComplete(
       stackClient,
       command.migrationId,
