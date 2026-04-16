@@ -52,7 +52,10 @@ describe('StackClient', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    mockCloudery = { getToken: vi.fn().mockResolvedValue('refreshed-token') }
+    mockCloudery = {
+      getToken: vi.fn().mockResolvedValue('refreshed-token'),
+      refreshToken: vi.fn().mockResolvedValue('refreshed-token'),
+    }
   })
 
   describe('listNextcloudDir', () => {
@@ -333,7 +336,7 @@ describe('StackClient', () => {
       const client = createStackClient(FQDN, 'https', TOKEN, mockCloudery, logger)
       const result = await client.listNextcloudDir('acc-123', '/')
 
-      expect(mockCloudery.getToken).toHaveBeenCalledWith(FQDN)
+      expect(mockCloudery.refreshToken).toHaveBeenCalledWith(FQDN)
       expect(mockSetToken).toHaveBeenCalled()
       expect(result).toEqual(entries)
     })

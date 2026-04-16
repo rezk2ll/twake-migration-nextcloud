@@ -68,6 +68,7 @@ describe('handleMigrationMessage', () => {
 
     mockCloudery = {
       getToken: vi.fn().mockResolvedValue('jwt-token'),
+      refreshToken: vi.fn().mockResolvedValue('jwt-token'),
     }
 
     mockStack = {
