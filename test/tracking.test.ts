@@ -8,6 +8,7 @@ import {
   isConflictError,
   isStaleRunning,
   STALE_HEARTBEAT_MS,
+  IllegalStatusTransitionError,
 } from '../src/domain/tracking.js'
 import type { StackClient } from '../src/clients/stack-client.js'
 import type { TrackingDoc } from '../src/domain/types.js'
@@ -247,6 +248,58 @@ describe('flushProgress', () => {
 
     const calledDoc = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
     expect(calledDoc.last_heartbeat_at).toBeDefined()
+  })
+})
+
+describe('status transition guards', () => {
+  it('setRunning rejects a completed doc', async () => {
+    const stack = makeMockStack(makeDoc({ status: 'completed' }))
+
+    await expect(setRunning(stack, 'mig-1', 1000)).rejects.toBeInstanceOf(
+      IllegalStatusTransitionError,
+    )
+    expect(stack.updateTrackingDoc).not.toHaveBeenCalled()
+  })
+
+  it('setCompleted on an already-completed doc is a silent no-op', async () => {
+    const stack = makeMockStack(makeDoc({ status: 'completed' }))
+
+    await setCompleted(stack, 'mig-1')
+    expect(stack.updateTrackingDoc).not.toHaveBeenCalled()
+  })
+
+  it('setCompleted refuses to overwrite a failed doc', async () => {
+    const stack = makeMockStack(makeDoc({ status: 'failed' }))
+
+    await expect(setCompleted(stack, 'mig-1')).rejects.toBeInstanceOf(
+      IllegalStatusTransitionError,
+    )
+    expect(stack.updateTrackingDoc).not.toHaveBeenCalled()
+  })
+
+  it('setFailed on an already-failed doc is a silent no-op', async () => {
+    const stack = makeMockStack(makeDoc({ status: 'failed' }))
+
+    await setFailed(stack, 'mig-1', 'again')
+    expect(stack.updateTrackingDoc).not.toHaveBeenCalled()
+  })
+
+  it('setFailed refuses to overwrite a completed doc', async () => {
+    const stack = makeMockStack(makeDoc({ status: 'completed' }))
+
+    await expect(setFailed(stack, 'mig-1', 'late failure')).rejects.toBeInstanceOf(
+      IllegalStatusTransitionError,
+    )
+    expect(stack.updateTrackingDoc).not.toHaveBeenCalled()
+  })
+
+  it('setRunning on a failed doc is allowed (retry path)', async () => {
+    const stack = makeMockStack(makeDoc({ status: 'failed' }))
+
+    await setRunning(stack, 'mig-1', 1000)
+
+    const calledDoc = vi.mocked(stack.updateTrackingDoc).mock.calls[0][0]
+    expect(calledDoc.status).toBe('running')
   })
 })
 

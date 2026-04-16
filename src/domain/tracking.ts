@@ -28,6 +28,19 @@ export function isStaleRunning(doc: TrackingDoc, now: number = Date.now()): bool
 }
 
 /**
+ * Raised when a state transition would violate the tracking-doc
+ * invariants (e.g. a late writer trying to demote `completed` back
+ * to `failed`). The caller typically logs and moves on — the guard
+ * exists so a stale consumer cannot clobber a new run's result.
+ */
+export class IllegalStatusTransitionError extends Error {
+  constructor(from: TrackingDoc['status'], to: TrackingDoc['status']) {
+    super(`Illegal tracking-doc transition: ${from} -> ${to}`)
+    this.name = 'IllegalStatusTransitionError'
+  }
+}
+
+/**
  * @param error - Caught error value
  * @returns true if the error represents an HTTP/CouchDB 409 conflict
  */
@@ -55,6 +68,10 @@ export async function updateTracking(
   for (let attempt = 0; attempt < MAX_CONFLICT_RETRIES; attempt++) {
     const doc = await stackClient.getTrackingDoc(docId)
     const updated = updater(doc)
+    // Same reference means the updater has nothing to write (idempotent
+    // no-op such as setCompleted on an already-completed doc). Skipping
+    // the write also skips the CouchDB round trip.
+    if (updated === doc) return
     try {
       await stackClient.updateTrackingDoc(updated)
       return
@@ -81,16 +98,21 @@ export async function setRunning(
   bytesTotal: number
 ): Promise<void> {
   const now = new Date().toISOString()
-  await updateTracking(stackClient, docId, (doc) => ({
-    ...doc,
-    status: 'running',
-    started_at: doc.started_at ?? now,
-    last_heartbeat_at: now,
-    progress: {
-      ...doc.progress,
-      bytes_total: bytesTotal,
-    },
-  }))
+  await updateTracking(stackClient, docId, (doc) => {
+    if (doc.status === 'completed') {
+      throw new IllegalStatusTransitionError(doc.status, 'running')
+    }
+    return {
+      ...doc,
+      status: 'running',
+      started_at: doc.started_at ?? now,
+      last_heartbeat_at: now,
+      progress: {
+        ...doc.progress,
+        bytes_total: bytesTotal,
+      },
+    }
+  })
 }
 
 /**
@@ -103,11 +125,13 @@ export async function setCompleted(
   docId: string
 ): Promise<void> {
   const finishedAt = new Date().toISOString()
-  await updateTracking(stackClient, docId, (doc) => ({
-    ...doc,
-    status: 'completed',
-    finished_at: finishedAt,
-  }))
+  await updateTracking(stackClient, docId, (doc) => {
+    if (doc.status === 'completed') return doc
+    if (doc.status === 'failed') {
+      throw new IllegalStatusTransitionError(doc.status, 'completed')
+    }
+    return { ...doc, status: 'completed', finished_at: finishedAt }
+  })
 }
 
 /**
@@ -122,12 +146,18 @@ export async function setFailed(
   errorMessage: string
 ): Promise<void> {
   const now = new Date().toISOString()
-  await updateTracking(stackClient, docId, (doc) => ({
-    ...doc,
-    status: 'failed',
-    finished_at: now,
-    errors: [...doc.errors, { path: '', message: errorMessage, at: now }],
-  }))
+  await updateTracking(stackClient, docId, (doc) => {
+    if (doc.status === 'failed') return doc
+    if (doc.status === 'completed') {
+      throw new IllegalStatusTransitionError(doc.status, 'failed')
+    }
+    return {
+      ...doc,
+      status: 'failed',
+      finished_at: now,
+      errors: [...doc.errors, { path: '', message: errorMessage, at: now }],
+    }
+  })
 }
 
 /** Local progress deltas accumulated between flushes. */
