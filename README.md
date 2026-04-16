@@ -20,7 +20,7 @@ The service never talks to Nextcloud directly. All file operations go through th
 - A single file failure doesn't abort the migration — the error is recorded in the tracking document and the service moves on.
 - If a file already exists in Cozy (409), it's skipped. This makes migrations resumable after a crash.
 - Token expiration mid-migration triggers an automatic refresh from the Cloudery.
-- If the Stack becomes unreachable, the migration is marked as failed.
+- If the consumer itself crashes mid-migration, the tracking document is left in `running` with a stale heartbeat. The next message that arrives for the same migration id picks the work back up and skips files already in Cozy.
 
 ## Configuration
 
@@ -34,3 +34,4 @@ Copy `.env.example` to `.env` and fill in the values. See [docs/configuration.md
 - [Docker](docs/docker.md) — building, running, and CI image publishing
 - [RabbitMQ contract](docs/rabbitmq.md) — exchange, queue, message format
 - [Tracking document](docs/tracking.md) — CouchDB schema, status transitions, fields
+- [Operations](docs/operations.md) — runbook: health signals, stuck migrations, DLQ inspection

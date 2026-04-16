@@ -63,3 +63,17 @@ Lower values give the Settings UI more frequent progress updates at the cost of 
 ```
 FLUSH_INTERVAL="50"
 ```
+
+### `MAX_CONCURRENT_MIGRATIONS`
+
+Hard cap on the number of migrations the consumer will run at the same time. Defaults to `10`, matching the RabbitMQ prefetch.
+
+The prefetch only limits concurrent *handlers* — messages being validated. Once a handler has ACKed and fired the migration, the migration keeps running in the background. Without this cap, a burst of messages could spawn hundreds of concurrent migrations competing for the event loop and memory, with no backpressure.
+
+When every slot is held, new handlers block waiting for one to free. That keeps the next messages unacked, which naturally makes RabbitMQ hold them back. Raise this if you have the infrastructure headroom to run more migrations in parallel; lower it when running alongside other tenants on a cramped node.
+
+Shutdown waits up to 60 s for in-flight migrations to finish on SIGTERM/SIGINT. Anything left running when the deadline hits is reclaimed by the heartbeat recovery on the next consumer that picks the message up (see [Tracking document](tracking.md)).
+
+```
+MAX_CONCURRENT_MIGRATIONS="10"
+```

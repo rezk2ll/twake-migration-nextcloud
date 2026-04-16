@@ -40,22 +40,19 @@ Nextcloud credentials (URL, login, app password) are stored in the `io.cozy.acco
 
 ## Acknowledgment
 
-Messages are ACKed **early** — after validation passes but before the migration starts. This avoids holding the message unacked for hours during a large migration.
+Messages are ACKed **early** — after validation passes and a concurrency slot has been reserved, but before the migration itself starts. This avoids holding the message unacked for hours during a large migration, while still applying backpressure: if the concurrency cap is reached, the handler blocks before ACK and the message stays with the broker.
 
-After ACK, the tracking document in CouchDB is the sole source of truth for migration state.
+After ACK, the tracking document in CouchDB is the sole source of truth for migration state. A crashed consumer is recovered by the heartbeat logic, not by re-delivery of the original message.
 
 ## Retries and dead-lettering
 
-| Behavior | Detail |
-|---|---|
-| Pre-ACK failures | Handler throws → library retries up to 3 times |
-| Retry delay | 1 second between attempts |
-| After 3 failures | Message is moved to the dead-letter queue |
-| Post-ACK failures | Handled by the migration logic, recorded in the tracking document |
+Pre-ACK failures are classified rather than uniformly retried — the library's 3× retry budget is precious and shouldn't be spent on messages that will never succeed.
 
-Pre-ACK failures include: Cloudery unreachable, tracking document not found, invalid message format. These are transient or configuration issues worth retrying.
+**Transient, worth retrying** (Stack 5xx, network blip, CouchDB conflict exhaustion): the handler throws, the library retries up to 3 times with a 1-second delay, then the message dead-letters.
 
-Post-ACK failures (file transfer errors, Stack outages) don't involve RabbitMQ at all — the tracking document records what happened.
+**Permanent, retry won't help** (malformed payload, missing tracking document, source path not found in Nextcloud): the handler logs, marks the tracking doc failed where that's applicable, and ACKs. No retry, no DLQ pollution.
+
+Post-ACK failures (per-file transfer errors, file already exists, migration-level faults) are handled by the migration itself and recorded in the tracking document. They never involve RabbitMQ.
 
 ## Idempotency
 
@@ -64,12 +61,15 @@ Before starting, the service reads the tracking document:
 | Tracking doc status | Action |
 |---|---|
 | `completed` | ACK and skip |
-| `running` | ACK and skip |
+| `running`, fresh heartbeat | ACK and skip — another consumer is on it |
+| `running`, stale heartbeat | Resume — the previous consumer crashed; see [Tracking document](tracking.md#heartbeat-and-stale-running-recovery) |
 | `pending` | Proceed normally |
 | `failed` | Proceed (retry scenario) |
 
-This prevents duplicate processing if the same message is delivered twice.
+A heartbeat is considered stale after 30 minutes with no progress write.
 
-## Prefetch
+## Concurrency
 
-Set to 10. Multiple migrations for different users can run concurrently. Each migration is independent — its own token, its own tracking document, its own Cozy instance.
+The RabbitMQ prefetch is 10, but that only governs how many messages can be in the hands of handlers concurrently. The actual cap on in-flight migrations is controlled by `MAX_CONCURRENT_MIGRATIONS` (default 10). When every slot is full, new handlers block waiting for one to free, which applies natural backpressure through the unacked message count.
+
+Graceful shutdown (SIGTERM/SIGINT) waits up to 60 s for in-flight migrations to finish before the process exits. Anything still running past the deadline is reclaimed by the heartbeat recovery on the next consumer that picks the message up.

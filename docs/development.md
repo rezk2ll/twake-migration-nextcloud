@@ -32,18 +32,21 @@ src/
   index.ts                  Entry point — connects RabbitMQ, subscribes, handles shutdown
 
   clients/                  External integrations. Everything that talks to something outside the process.
-    stack-client.ts         Cozy Stack API (token refresh on 401)
-    cloudery-client.ts      Cloudery token endpoint
-    cozy-stack-client.d.ts  Type shim for the cozy-stack-client library
+    stack-client.ts         Cozy Stack API (token refresh on 401, per-call timeouts)
+    cloudery-client.ts      Cloudery token endpoint (retry with backoff, per-FQDN token cache)
+    with-timeout.ts         Generic Promise-race timeout helper
+    cozy-stack-client.d.ts  Ambient types for the cozy-stack-client library
 
   domain/                   What a migration is. No HTTP, no config, no process plumbing.
-    migration.ts            Core logic — lazy directory traversal, file transfers, progress tracking
-    tracking.ts             Tracking document helpers with CouchDB 409 conflict retry
+    migration.ts            Core logic — iterative directory traversal, file transfers, progress tracking
+    tracking.ts             Tracking document helpers with CouchDB 409 conflict retry + status guards
+    errors.ts               Shared error-message extraction helper
     doctypes.ts             Cozy doctype identifiers used across the codebase
     types.ts                Migration command + tracking document schema
 
   runtime/                  Process wiring. How domain + clients get started and fed.
     consumer.ts             Message handler — validation, idempotency, quota check, early ACK
+    migration-runner.ts     Concurrency cap + in-flight tracking for graceful shutdown
     config.ts               Environment variable parsing + Config type
 
 test/
