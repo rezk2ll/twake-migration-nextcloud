@@ -1,14 +1,23 @@
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client'
 
 /**
- * Prometheus metrics for the consumer. One shared registry is
- * populated at import time so call sites can just `.inc()` or
- * `.observe()` without threading a registry through every factory.
- * The default Node runtime metrics (heap, event-loop lag, GC) are
- * collected automatically.
+ * Prometheus metrics for the consumer. Call sites import specific
+ * metrics and call `.inc()` / `.observe()` directly; the shared
+ * `registry` is exported for the HTTP server. Default Node runtime
+ * metrics (heap, event-loop lag, GC) are opt-in via
+ * {@link enableDefaultMetrics} — tests that import this module do
+ * not want dangling interval timers registered at import time.
  */
 export const registry = new Registry()
-collectDefaultMetrics({ register: registry })
+
+/**
+ * Opts into prom-client's default Node runtime metrics. Call once,
+ * typically from `main()` at process boot. Idempotent: repeat calls
+ * on the same registry are silently ignored by prom-client.
+ */
+export function enableDefaultMetrics(): void {
+  collectDefaultMetrics({ register: registry })
+}
 
 /** 1 when the RabbitMQ connection is up, 0 otherwise. */
 export const rabbitmqConnected = new Gauge({
@@ -17,11 +26,27 @@ export const rabbitmqConnected = new Gauge({
   registers: [registry],
 })
 
-/** Current in-flight migrations (matches MigrationRunner.active). */
+// Pull-model source for the active-migrations gauge. The runner holds
+// the authoritative count; the gauge samples it at scrape time via the
+// `collect` callback below. Bind the source once in `main()` after
+// instantiating the runner.
+let activeMigrationsSource: () => number = () => 0
+
+/**
+ * @param source - Function returning the current in-flight migration count
+ */
+export function bindActiveMigrationsSource(source: () => number): void {
+  activeMigrationsSource = source
+}
+
+/** Current in-flight migrations, sampled from the runner on scrape. */
 export const activeMigrations = new Gauge({
   name: 'nextcloud_migration_active',
   help: 'Number of migrations currently running on this consumer.',
   registers: [registry],
+  collect() {
+    this.set(activeMigrationsSource())
+  },
 })
 
 /** Migrations that the consumer has started. */

@@ -5,7 +5,11 @@ import { createClouderyClient } from './clients/cloudery-client.js'
 import { handleMigrationMessage } from './runtime/consumer.js'
 import { createMigrationRunner } from './runtime/migration-runner.js'
 import { createOpsServer } from './runtime/http-server.js'
-import { rabbitmqConnected } from './runtime/metrics.js'
+import {
+  bindActiveMigrationsSource,
+  enableDefaultMetrics,
+  rabbitmqConnected,
+} from './runtime/metrics.js'
 import { parseMigrationCommand } from './domain/types.js'
 
 const EXCHANGE = 'migration'
@@ -26,8 +30,10 @@ async function main(): Promise<void> {
 
   logger.info({ event: 'service.starting' }, 'Starting Nextcloud migration service')
 
+  enableDefaultMetrics()
   const clouderyClient = createClouderyClient(config.clouderyUrl, config.clouderyToken, logger)
   const migrationRunner = createMigrationRunner(config.maxConcurrentMigrations, logger)
+  bindActiveMigrationsSource(() => migrationRunner.active)
 
   const rabbitClient = new RabbitMQClient({
     url: config.rabbitmqUrl,

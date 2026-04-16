@@ -8,7 +8,11 @@ const logger = {
   child: vi.fn().mockReturnThis(),
 } as unknown as Logger
 
-/** Grabs a free ephemeral port by letting the OS choose. */
+/**
+ * Grabs a free ephemeral port by letting the OS choose. Safe because
+ * vitest runs tests within a file sequentially — two tests in this
+ * file never hold a port at the same time.
+ */
 async function pickPort(): Promise<number> {
   const { createServer } = await import('node:http')
   return new Promise((resolve) => {
