@@ -222,6 +222,85 @@ describe('runMigration', () => {
     expect(listMock.mock.calls.length).toBeGreaterThan(DEPTH)
   })
 
+  it('logs migration.failed and writes flushAndFail when setRunning fails', async () => {
+    // Fatal at setRunning (non-409 on the first updateTrackingDoc call).
+    // The outer catch should log `migration.failed` and then drive the
+    // terminal write through flushAndFail so the tracking doc ends up
+    // in `failed`, not stuck in `pending`.
+    const stack = makeStack({
+      updateTrackingDoc: vi.fn()
+        // setRunning writes
+        .mockRejectedValueOnce(new Error('Stack request failed (500): boom'))
+        // flushAndFail writes
+        .mockImplementationOnce(async (doc: TrackingDoc) => ({ ...doc, _rev: 'next' })),
+    })
+
+    await runMigration(makeCommand(), stack, logger, 0, '/Nextcloud')
+
+    const statuses = vi.mocked(stack.updateTrackingDoc).mock.calls
+      .map((c) => (c[0] as TrackingDoc).status)
+    expect(statuses).toContain('failed')
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'migration.failed' }),
+      expect.any(String),
+    )
+  })
+
+  it('logs migration.tracking_update_failed when the terminal flushAndFail also fails', async () => {
+    // Every write rejects, so flushAndFail's terminal attempt also
+    // throws. runMigration must still return normally (it catches the
+    // inner failure) and emit `migration.tracking_update_failed` so
+    // ops has a signal that the doc is now a stale-running zombie.
+    const stack = makeStack({
+      updateTrackingDoc: vi.fn().mockRejectedValue(
+        new Error('Stack request failed (500): boom'),
+      ),
+    })
+
+    await runMigration(makeCommand(), stack, logger, 0, '/Nextcloud')
+
+    // The terminal flushAndFail write never lands (it rejects), but the
+    // doc it tried to write must still have been `failed` — otherwise
+    // we would not have reached the inner catch at all.
+    const statuses = vi.mocked(stack.updateTrackingDoc).mock.calls
+      .map((c) => (c[0] as TrackingDoc).status)
+    expect(statuses).toContain('failed')
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'migration.failed' }),
+      expect.any(String),
+    )
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'migration.tracking_update_failed' }),
+      expect.any(String),
+    )
+  })
+
+  it('flushes progress mid-run once flushInterval is crossed', async () => {
+    // With flushInterval=2 and 5 files we expect the walker to flush
+    // twice during the traversal (after file 2 and after file 4),
+    // plus the final flushAndComplete. Covers the boundary branch
+    // that small happy-path tests never actually trigger.
+    const entries: NextcloudEntry[] = Array.from({ length: 5 }, (_, i) => ({
+      type: 'file', name: `f${i}.txt`, path: `/f${i}.txt`, size: 100, mime: 'text/plain',
+    }))
+    const stack = makeStack({
+      listNextcloudDir: vi.fn().mockResolvedValueOnce(entries),
+    })
+
+    await runMigration(makeCommand(), stack, logger, 500, '/Nextcloud', 2)
+
+    const writes = vi.mocked(stack.updateTrackingDoc).mock.calls.map((c) => c[0] as TrackingDoc)
+    // Non-terminal writes carrying a file count are mid-run flushes.
+    // With flushInterval=2 and 5 files we expect exactly two — after
+    // file 2 and after file 4. Using toBe(2) would catch both a
+    // missing flush and an accidental extra one.
+    const midRunFlushes = writes.filter(
+      (d) => d.status !== 'completed' && d.progress.files_imported > 0,
+    )
+    expect(midRunFlushes).toHaveLength(2)
+    expect(writes.at(-1)?.status).toBe('completed')
+  })
+
   it('seeds bytes_total on the running-state update from the passed argument', async () => {
     // The frontend renders a progress bar from bytes_imported / bytes_total,
     // so bytes_total must be set once at the start (from the pre-flight
