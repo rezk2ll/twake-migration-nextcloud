@@ -255,6 +255,38 @@ describe('StackClient', () => {
         /could not find existing directory/i,
       )
     })
+
+    it('walks pagination links to find the child when the first page misses', async () => {
+      mockCreateDirectory.mockRejectedValueOnce(
+        Object.assign(new Error('Conflict'), {
+          name: 'FetchError',
+          status: 409,
+          reason: { errors: [{ status: '409', title: 'Conflict', source: {} }] },
+        }),
+      )
+      // First page: not found, but has a next link.
+      mockFetchJSON.mockResolvedValueOnce({
+        data: { id: 'parent-id', type: 'io.cozy.files' },
+        included: [
+          { id: 'sibling', type: 'io.cozy.files', attributes: { name: 'Other', type: 'directory' } },
+        ],
+        links: { next: '/files/parent-id?page[cursor]=abc' },
+      })
+      // Second page: contains the match.
+      mockFetchJSON.mockResolvedValueOnce({
+        data: { id: 'parent-id', type: 'io.cozy.files' },
+        included: [
+          { id: 'existing-dir-id', type: 'io.cozy.files', attributes: { name: 'Photos', type: 'directory' } },
+        ],
+      })
+
+      const client = createStackClient(FQDN, 'https', TOKEN, mockCloudery, logger)
+      const dirId = await client.createDir('parent-id', 'Photos')
+
+      expect(dirId).toBe('existing-dir-id')
+      expect(mockFetchJSON).toHaveBeenCalledTimes(2)
+      expect(mockFetchJSON).toHaveBeenNthCalledWith(2, 'GET', '/files/parent-id?page[cursor]=abc')
+    })
   })
 
   describe('getDiskUsage', () => {

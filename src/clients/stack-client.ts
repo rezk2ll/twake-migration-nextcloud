@@ -16,6 +16,17 @@ import { withTimeout } from './with-timeout.js'
 const METADATA_TIMEOUT_MS = 60_000
 const TRANSFER_TIMEOUT_MS = 15 * 60_000
 
+/**
+ * Page size for walking a directory's children during the createDir
+ * 409 recovery. Chosen to match the Stack's default so we do not ask
+ * for unusual page sizes. Combined with CREATE_DIR_LOOKUP_MAX_PAGES,
+ * this caps the recovery at ~10k siblings — well above any realistic
+ * tree but bounded so a misbehaving Stack cannot make us loop
+ * forever.
+ */
+const CREATE_DIR_LOOKUP_PAGE_SIZE = 100
+const CREATE_DIR_LOOKUP_MAX_PAGES = 100
+
 export interface NextcloudEntry {
   type: 'file' | 'directory'
   name: string
@@ -135,6 +146,39 @@ export function createStackClient(
     label: string,
   ): Promise<T> {
     return withTimeout(() => withTokenRefresh(operation), timeoutMs, label)
+  }
+
+  /**
+   * Walks the parent directory's children page-by-page looking for a
+   * directory named `name`. Returns its ID, or undefined after scanning
+   * every page. The previous single-page fetch silently broke resume
+   * for parents with more children than the hardcoded limit; walking
+   * with JSON-API cursor links handles arbitrarily wide directories at
+   * the cost of extra round trips in the 409-recovery path (which only
+   * runs when a prior consumer crashed mid-migration).
+   */
+  async function findExistingChildDir(
+    parentDirId: string,
+    name: string,
+  ): Promise<string | undefined> {
+    let nextUrl: string | undefined =
+      `/files/${encodeURIComponent(parentDirId)}?page[limit]=${CREATE_DIR_LOOKUP_PAGE_SIZE}`
+    for (let page = 0; nextUrl && page < CREATE_DIR_LOOKUP_MAX_PAGES; page++) {
+      const response = await call(
+        () => cozy.fetchJSON('GET', nextUrl as string),
+        METADATA_TIMEOUT_MS,
+        'createDir.lookupExisting',
+      ) as {
+        included?: Array<{ id: string; attributes: { name: string; type: string } }>
+        links?: { next?: string }
+      }
+      const match = response.included?.find(
+        (child) => child.attributes.name === name && child.attributes.type === 'directory',
+      )
+      if (match) return match.id
+      nextUrl = response.links?.next
+    }
+    return undefined
   }
 
   return {
@@ -258,22 +302,12 @@ export function createStackClient(
           throw error
         }
         // On 409, the Stack's body does not carry the conflicting doc's id
-        // (`errors[0].source` is empty), so we query the parent to find the
-        // matching child by name. Reading `error.response.json()` would
-        // crash with "Body is unusable" because cozy-stack-client already
-        // drained it while constructing the FetchError — never go there.
-        const parent = await call(
-          () =>
-            cozy.fetchJSON('GET', `/files/${encodeURIComponent(parentDirId)}?page[limit]=1000`),
-          METADATA_TIMEOUT_MS,
-          'createDir.lookupExisting',
-        ) as {
-          included?: Array<{ id: string; attributes: { name: string; type: string } }>
-        }
-        const existing = parent.included?.find(
-          (child) => child.attributes.name === name && child.attributes.type === 'directory',
-        )
-        if (existing) return existing.id
+        // (`errors[0].source` is empty), so we walk the parent's children
+        // and find the matching name. Reading `error.response.json()`
+        // would crash with "Body is unusable" because cozy-stack-client
+        // already drained it while constructing the FetchError.
+        const existingId = await findExistingChildDir(parentDirId, name)
+        if (existingId) return existingId
         throw new Error(
           `Stack 409 on createDir but could not find existing directory ${name} under ${parentDirId}`,
         )
