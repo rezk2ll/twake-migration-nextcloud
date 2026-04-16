@@ -110,7 +110,9 @@ export function createStackClient(
       const status = (error as { status?: number }).status
       if (status === 401) {
         logger.warn({ event: 'stack.token_refresh' }, 'Stack returned 401, refreshing token')
-        const newToken = await clouderyClient.getToken(workplaceFqdn)
+        // refreshToken bypasses the Cloudery client's cache so we do not
+        // replay the same stale JWT that just got rejected.
+        const newToken = await clouderyClient.refreshToken(workplaceFqdn)
         cozy.setToken(newToken)
         return await operation()
       }
