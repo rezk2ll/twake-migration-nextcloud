@@ -1,6 +1,7 @@
 import type { Logger } from 'pino'
 import type { StackClient } from '../clients/stack-client.js'
 import type { MigrationCommand } from './types.js'
+import { getErrorMessage } from './errors.js'
 import {
   setRunning,
   setCompleted,
@@ -37,14 +38,6 @@ async function ensureTargetDir(
     parentId = await stackClient.createDir(parentId, name)
   }
   return parentId
-}
-
-/**
- * @param error - Caught error value
- * @returns The error message string, or String(error) for non-Error values
- */
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 /**

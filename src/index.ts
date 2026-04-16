@@ -36,7 +36,19 @@ async function main(): Promise<void> {
     ROUTING_KEY,
     QUEUE,
     async (msg: RabbitMQMessage) => {
-      const command = parseMigrationCommand(msg)
+      // Schema validation failure is permanent — no retry will make
+      // the payload valid — so we log and ACK rather than spin the
+      // library's 3× retry budget before DLQ.
+      let command
+      try {
+        command = parseMigrationCommand(msg)
+      } catch (error) {
+        logger.warn({
+          event: 'consumer.invalid_message',
+          error: error instanceof Error ? error.message : String(error),
+        }, 'Dropping malformed migration message')
+        return
+      }
       await handleMigrationMessage(command, clouderyClient, logger, config)
     }
   )

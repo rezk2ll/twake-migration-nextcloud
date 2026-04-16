@@ -186,4 +186,55 @@ describe('handleMigrationMessage', () => {
       handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
     ).rejects.toThrow('503')
   })
+
+  describe('permanent pre-ACK failures', () => {
+    it('drops the message when the tracking doc is missing (404)', async () => {
+      vi.mocked(mockStack.getTrackingDoc).mockRejectedValueOnce(
+        Object.assign(new Error('not found'), { status: 404 }),
+      )
+
+      await handleMigrationMessage(makeCommand(), mockCloudery, logger, config)
+
+      expect(runMigration).not.toHaveBeenCalled()
+      expect(mockStack.updateTrackingDoc).not.toHaveBeenCalled()
+    })
+
+    it('still throws on transient tracking-doc errors (5xx)', async () => {
+      vi.mocked(mockStack.getTrackingDoc).mockRejectedValueOnce(
+        Object.assign(new Error('Internal Server Error'), { status: 500 }),
+      )
+
+      await expect(
+        handleMigrationMessage(makeCommand(), mockCloudery, logger, config),
+      ).rejects.toThrow(/Internal Server Error/)
+    })
+
+    it('marks the migration failed when the source path is missing (404)', async () => {
+      vi.mocked(mockStack.getNextcloudSize).mockRejectedValueOnce(
+        Object.assign(new Error('not found'), { status: 404 }),
+      )
+
+      await handleMigrationMessage(
+        makeCommand({ sourcePath: '/does-not-exist' }),
+        mockCloudery,
+        logger,
+        config,
+      )
+
+      expect(runMigration).not.toHaveBeenCalled()
+      const failedUpdate = vi.mocked(mockStack.updateTrackingDoc).mock.calls
+        .find((c) => (c[0] as TrackingDoc).status === 'failed')
+      expect(failedUpdate).toBeDefined()
+    })
+
+    it('still throws on transient Nextcloud size errors (5xx)', async () => {
+      vi.mocked(mockStack.getNextcloudSize).mockRejectedValueOnce(
+        Object.assign(new Error('Bad Gateway'), { status: 502 }),
+      )
+
+      await expect(
+        handleMigrationMessage(makeCommand(), mockCloudery, logger, config),
+      ).rejects.toThrow(/Bad Gateway/)
+    })
+  })
 })
