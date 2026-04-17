@@ -93,6 +93,17 @@ export interface TrackingSkipped {
   size: number
 }
 
+/**
+ * Reads a required string field off a raw RabbitMQ payload. Shared by
+ * the request and cancel parsers so error messages stay consistent and
+ * a single change point covers both.
+ *
+ * @param msg - Raw message payload
+ * @param key - Field name to read
+ * @param kind - Human-readable message kind, interpolated into the
+ *   error message (e.g. `'migration'`, `'cancel'`)
+ * @throws If the field is missing, empty, or not a string
+ */
 function requireString(msg: Record<string, unknown>, key: string, kind: string): string {
   const value = msg[key]
   if (typeof value !== 'string' || !value) {
@@ -101,6 +112,14 @@ function requireString(msg: Record<string, unknown>, key: string, kind: string):
   return value
 }
 
+/**
+ * Reads the `timestamp` field off a raw payload, defaulting to the
+ * current time when the field is missing or malformed. Mirrors the
+ * original request parser's tolerant behaviour.
+ *
+ * @param msg - Raw message payload
+ * @returns The payload timestamp in ms, or `Date.now()` as a fallback
+ */
 function coerceTimestamp(msg: Record<string, unknown>): number {
   return typeof msg.timestamp === 'number' ? msg.timestamp : Date.now()
 }

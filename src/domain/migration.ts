@@ -357,6 +357,16 @@ export async function runMigration(
   }
 }
 
+/**
+ * Terminal path for a cooperative cancellation: records the outcome
+ * metric, emits a structured summary, and flushes any pending progress
+ * into the tracking doc as it transitions to `canceled`. A failure to
+ * write the terminal state is logged but swallowed — the in-memory run
+ * is over either way and the heartbeat-recovery logic reclaims any
+ * zombie doc left behind.
+ *
+ * @param ctx - Migration context carrying the pending deltas and Stack client
+ */
 async function finalizeCancellation(ctx: MigrationContext): Promise<void> {
   migrationsFinished.inc({ outcome: 'canceled' })
   ctx.logger.info({

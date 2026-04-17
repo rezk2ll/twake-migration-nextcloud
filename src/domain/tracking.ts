@@ -83,10 +83,22 @@ export function isConflictError(error: unknown): boolean {
 
 /**
  * Read-modify-write with automatic retry on CouchDB 409 conflicts.
+ *
+ * Two short-circuits inside the updater:
+ * - Returning the same reference as the input doc signals an idempotent
+ *   no-op and skips the PUT entirely (saves a round trip on repeated
+ *   terminal writes).
+ * - Throwing from inside the updater (for example {@link CancellationRequestedError}
+ *   raised by `flushProgress` when it sees `cancel_requested: true`)
+ *   aborts the loop and propagates the error to the caller without
+ *   writing anything. Cancellation relies on this to piggyback its
+ *   cross-pod signal on the existing read of the tracking doc.
+ *
  * @param stackClient - Stack API client
  * @param docId - Tracking document ID
  * @param updater - Pure function that produces the updated document
- * @throws After {@link MAX_CONFLICT_RETRIES} consecutive 409s, or on any non-409 error
+ * @throws After {@link MAX_CONFLICT_RETRIES} consecutive 409s, on any
+ *   non-409 error from the Stack, or on any error thrown by `updater`.
  */
 export async function updateTracking(
   stackClient: StackClient,
