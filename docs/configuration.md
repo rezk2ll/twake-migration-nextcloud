@@ -85,3 +85,19 @@ Shutdown waits up to 60 s for in-flight migrations to finish on SIGTERM/SIGINT. 
 ```
 MAX_CONCURRENT_MIGRATIONS="10"
 ```
+
+### RabbitMQ topology overrides
+
+The exchange, queue names, and routing keys default to the values documented in [RabbitMQ](rabbitmq.md#topology). Only override them when the surrounding environment already owns a different contract (for example a shared broker with naming conventions the Stack publisher also follows). Both ends of the contract must agree: the Stack publishes to whatever the service subscribes on, so any override has to be applied to both.
+
+Empty values fall back to the default so an empty ConfigMap field (a common foot-gun) cannot create an unnamed queue.
+
+| Variable | Default |
+|---|---|
+| `RABBITMQ_EXCHANGE` | `migration` |
+| `RABBITMQ_REQUEST_ROUTING_KEY` | `nextcloud.migration.requested` |
+| `RABBITMQ_REQUEST_QUEUE` | `migration.nextcloud.commands` |
+| `RABBITMQ_CANCEL_ROUTING_KEY` | `nextcloud.migration.canceled` |
+| `RABBITMQ_CANCEL_QUEUE` | `migration.nextcloud.cancels` |
+
+Renaming a queue on a running deployment orphans the old queue on the broker; the library does not delete it. Clean up through the RabbitMQ management UI after the new name has taken over.

@@ -1,5 +1,10 @@
 export interface Config {
   rabbitmqUrl: string
+  rabbitmqExchange: string
+  rabbitmqRequestRoutingKey: string
+  rabbitmqRequestQueue: string
+  rabbitmqCancelRoutingKey: string
+  rabbitmqCancelQueue: string
   clouderyUrl: string
   clouderyToken: string
   logLevel: string
@@ -15,12 +20,28 @@ export interface Config {
   httpPort: number
 }
 
+const DEFAULT_RABBITMQ_EXCHANGE = 'migration'
+const DEFAULT_REQUEST_ROUTING_KEY = 'nextcloud.migration.requested'
+const DEFAULT_REQUEST_QUEUE = 'migration.nextcloud.commands'
+const DEFAULT_CANCEL_ROUTING_KEY = 'nextcloud.migration.canceled'
+const DEFAULT_CANCEL_QUEUE = 'migration.nextcloud.cancels'
+
 function requireEnv(name: string): string {
   const value = process.env[name]
   if (!value) {
     throw new Error(`Missing required environment variable: ${name}`)
   }
   return value
+}
+
+/**
+ * Reads an optional env var, treating missing AND empty string as "unset".
+ * Uses `||` rather than `??` deliberately: an empty string is the common
+ * foot-gun when the value comes from a Helm chart's ConfigMap key that
+ * the user forgot to fill in, and we want the default in that case too.
+ */
+function envOrDefault(name: string, fallback: string): string {
+  return process.env[name] || fallback
 }
 
 /**
@@ -49,6 +70,11 @@ export function loadConfig(): Config {
   }
   return {
     rabbitmqUrl: requireEnv('RABBITMQ_URL'),
+    rabbitmqExchange: envOrDefault('RABBITMQ_EXCHANGE', DEFAULT_RABBITMQ_EXCHANGE),
+    rabbitmqRequestRoutingKey: envOrDefault('RABBITMQ_REQUEST_ROUTING_KEY', DEFAULT_REQUEST_ROUTING_KEY),
+    rabbitmqRequestQueue: envOrDefault('RABBITMQ_REQUEST_QUEUE', DEFAULT_REQUEST_QUEUE),
+    rabbitmqCancelRoutingKey: envOrDefault('RABBITMQ_CANCEL_ROUTING_KEY', DEFAULT_CANCEL_ROUTING_KEY),
+    rabbitmqCancelQueue: envOrDefault('RABBITMQ_CANCEL_QUEUE', DEFAULT_CANCEL_QUEUE),
     clouderyUrl: requireEnv('CLOUDERY_URL'),
     clouderyToken: requireEnv('CLOUDERY_TOKEN'),
     logLevel: process.env.LOG_LEVEL ?? 'info',

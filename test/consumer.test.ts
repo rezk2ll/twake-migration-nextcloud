@@ -3,8 +3,8 @@ import { handleMigrationMessage } from '../src/runtime/consumer.js'
 import type { ClouderyClient } from '../src/clients/cloudery-client.js'
 import type { StackClient } from '../src/clients/stack-client.js'
 import type { MigrationCommand, TrackingDoc } from '../src/domain/types.js'
-import type { Config } from '../src/runtime/config.js'
 import type { MigrationRunner } from '../src/runtime/migration-runner.js'
+import { makeTestConfig } from './fixtures.js'
 import type { Logger } from 'pino'
 
 /** Pass-through runner for tests: invokes the task factory synchronously
@@ -35,14 +35,7 @@ const logger = {
   child: vi.fn().mockReturnThis(),
 } as unknown as Logger
 
-const config: Config = {
-  rabbitmqUrl: 'amqp://localhost',
-  clouderyUrl: 'https://manager.cozycloud.cc',
-  clouderyToken: 'secret',
-  logLevel: 'info',
-  flushInterval: 25,
-  stackUrlScheme: 'https',
-}
+const config = makeTestConfig()
 
 function makeCommand(overrides: Partial<MigrationCommand> = {}): MigrationCommand {
   return {

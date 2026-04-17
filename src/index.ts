@@ -12,12 +12,6 @@ import {
   rabbitmqConnected,
 } from './runtime/metrics.js'
 import { parseCancelCommand, parseMigrationCommand } from './domain/commands.js'
-
-const EXCHANGE = 'migration'
-const REQUEST_ROUTING_KEY = 'nextcloud.migration.requested'
-const REQUEST_QUEUE = 'migration.nextcloud.commands'
-const CANCEL_ROUTING_KEY = 'nextcloud.migration.canceled'
-const CANCEL_QUEUE = 'migration.nextcloud.cancels'
 /** How long we give in-flight migrations to finish on SIGTERM/SIGINT
  * before exiting anyway. The heartbeat/stale-recovery logic picks up
  * anything we leave behind, so this is a politeness ceiling rather
@@ -65,9 +59,9 @@ async function main(): Promise<void> {
   logger.info({ event: 'rabbitmq.connected' }, 'Connected to RabbitMQ')
 
   await rabbitClient.subscribe(
-    EXCHANGE,
-    REQUEST_ROUTING_KEY,
-    REQUEST_QUEUE,
+    config.rabbitmqExchange,
+    config.rabbitmqRequestRoutingKey,
+    config.rabbitmqRequestQueue,
     async (msg: RabbitMQMessage) => {
       // Schema validation failure is permanent — no retry will make
       // the payload valid — so we log and ACK rather than spin the
@@ -87,15 +81,15 @@ async function main(): Promise<void> {
   )
   logger.info({
     event: 'rabbitmq.subscribed',
-    exchange: EXCHANGE,
-    queue: REQUEST_QUEUE,
-    routing_key: REQUEST_ROUTING_KEY,
+    exchange: config.rabbitmqExchange,
+    queue: config.rabbitmqRequestQueue,
+    routing_key: config.rabbitmqRequestRoutingKey,
   }, 'Subscribed to migration queue')
 
   await rabbitClient.subscribe(
-    EXCHANGE,
-    CANCEL_ROUTING_KEY,
-    CANCEL_QUEUE,
+    config.rabbitmqExchange,
+    config.rabbitmqCancelRoutingKey,
+    config.rabbitmqCancelQueue,
     async (msg: RabbitMQMessage) => {
       let command
       try {
@@ -112,9 +106,9 @@ async function main(): Promise<void> {
   )
   logger.info({
     event: 'rabbitmq.subscribed',
-    exchange: EXCHANGE,
-    queue: CANCEL_QUEUE,
-    routing_key: CANCEL_ROUTING_KEY,
+    exchange: config.rabbitmqExchange,
+    queue: config.rabbitmqCancelQueue,
+    routing_key: config.rabbitmqCancelRoutingKey,
   }, 'Subscribed to cancel queue')
 
   const shutdown = async (signal: string) => {

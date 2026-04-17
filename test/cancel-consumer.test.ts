@@ -3,8 +3,8 @@ import { handleCancelMessage } from '../src/runtime/cancel-consumer.js'
 import type { ClouderyClient } from '../src/clients/cloudery-client.js'
 import type { StackClient } from '../src/clients/stack-client.js'
 import type { CancelCommand, TrackingDoc } from '../src/domain/types.js'
-import type { Config } from '../src/runtime/config.js'
 import type { MigrationRunner } from '../src/runtime/migration-runner.js'
+import { makeTestConfig } from './fixtures.js'
 import type { Logger } from 'pino'
 
 vi.mock('../src/clients/stack-client.js', () => ({
@@ -18,16 +18,7 @@ const logger = {
   child: vi.fn().mockReturnThis(),
 } as unknown as Logger
 
-const config: Config = {
-  rabbitmqUrl: 'amqp://localhost',
-  clouderyUrl: 'https://manager.cozycloud.cc',
-  clouderyToken: 'secret',
-  logLevel: 'info',
-  flushInterval: 25,
-  stackUrlScheme: 'https',
-  maxConcurrentMigrations: 10,
-  httpPort: 8080,
-}
+const config = makeTestConfig()
 
 function makeCommand(overrides: Partial<CancelCommand> = {}): CancelCommand {
   return {
